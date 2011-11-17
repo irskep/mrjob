@@ -33,7 +33,7 @@ Example::
                                                 # also be a list of strings
           output: livetests/basic/output.txt    # this is the default
           config:
-              method: command_line              # or env_var or null
+              method: command_line              # default. or env_var or null
               path: livetests/basic/mrjob.conf  # this is the default
                 # if no config specified, this is the default behavior
                 # if method is null, use normal precedence
@@ -41,7 +41,6 @@ Example::
 
 from __future__ import with_statement
 
-from contextlib import contextmanager
 from distutils.version import LooseVersion
 import logging
 import os
@@ -61,87 +60,98 @@ from testify import teardown
 import yaml
 
 
+from mrjob.emr import EMRJobRunner
+from mrjob.hadoop import HadoopJobRunner
+from mrjob.local import LocalMRJobRunner
+from mrjob.inline import InlineMRJobRunner
+
+
 logging.basicConfig()
 log = logging.getLogger('livetests')
 log.addHandler(logging.StreamHandler(sys.stderr))
 
 
-def start_hadoop(base_dir):
-    try:
-        shutil.rmtree('/tmp/hadoop-sjohnson')
-    except OSError:
-        pass # who cares
-
-    p = Popen([os.path.join(base_dir, 'bin', 'hadoop'), 'namenode', '-format'],
-              stdin=PIPE)
-    p.communicate()
-    check_call([os.path.join(base_dir, 'bin', 'start-all.sh')],
-               shell=True)
-
-def stop_hadoop(base_dir):
-    p = Popen([os.path.join(base_dir, 'bin', 'stop-all.sh')],
-              stdin=PIPE, shell=True)
-    p.communicate()
-
-
-@contextmanager
-def hadoop(version):
-    if LooseVersion(version) < LooseVersion('0.20'):
-        base_dir = os.environ['HADOOP_HOME_18']
-    else:
-        base_dir = os.environ['HADOOP_HOME_20']
-
-    os.environ['HADOOP_HOME'] = base_dir
-
-    log.info("    Activating Hadoop version %s" % version)
-    start_hadoop(base_dir)
-
-    yield
-
-    stop_hadoop(base_dir)
+def sanitize_name(s):
+    return ''.join(c for c in s if c.isdigit() or c.isalpha())
 
 
 class LiveTestCase(TestCase):
 
-#    @setup
-#    def make_tmp_dir(self):
-#        self.tmp_dir = tempfile.mkdtemp(prefix='mrjob-livetests')
-#
-#    @teardown
-#    def rm_tmp_dir(self):
-#        shutil.rmtree(self.tmp_dir)
-
     TEST_PATH = __file__
 
-    @setup
-    def load(self):
+    def __init__(self, *args, **kwargs):
         # don't run as abstract
         if self.TEST_PATH == __file__:
             return
-        base_dir = os.path.split(os.path.abspath(self.TEST_PATH))[0]
-        with open(os.path.join(base_dir, 'testconf.yaml'), 'r') as f:
+        self.test_base_dir = os.path.split(os.path.abspath(self.TEST_PATH))[0]
+        with open(os.path.join(self.test_base_dir,
+                               'testconf.yaml'), 'r') as f:
             self.config = yaml.load(f)
+
+        super(LiveTestCase, self).__init__(*args, **kwargs)
+
+    @setup
+    def init_hadoop(self):
+        self.hadoop_base_dir = None
+
+    @teardown
+    def stopteardown_hadoop(self):
+        if self.hadoop_base_dir:
+            p = Popen([os.path.join(self.hadoop_base_dir,
+                                    'bin', 'stop-all.sh')],
+                      stdin=PIPE, shell=True)
+            p.communicate()
+
+    def start_hadoop(self, version):
+
+        if LooseVersion(version) < LooseVersion('0.20'):
+            base_dir = os.environ['HADOOP_HOME_18']
+        else:
+            base_dir = os.environ['HADOOP_HOME_20']
+
+        os.environ['HADOOP_HOME'] = base_dir
+
+        log.info("    Activating Hadoop version %s" % version)
+        self.hadoop_base_dir = base_dir
+
+        try:
+            shutil.rmtree('/tmp/hadoop-sjohnson')
+        except OSError:
+            pass # who cares
+
+        p = Popen([os.path.join(base_dir, 'bin', 'hadoop'), 'namenode', '-format'],
+                  stdin=PIPE)
+        p.communicate()
+        check_call([os.path.join(base_dir, 'bin', 'start-all.sh')],
+                   shell=True)
 
     def conf_info(self, job_data):
         conf_info = job_data.get('config', {})
         conf_info['method'] = conf_info.get('method', 'command_line')
         conf_info['path'] = conf_info.get(
-            'path', os.path.join(self.TEST_PATH, 'mrjob.conf'))
+            'path', os.path.join(self.test_base_dir, 'mrjob.conf'))
         return conf_info
 
-    def test_jobs(self):
+    def runnable_test_methods(self):
+        for item in self._make_tests():
+            yield item
+
+        for item in super(LiveTestCase, self).runnable_test_methods():
+            yield item
+
+    def _make_tests(self):
         # don't run as abstract
         if self.TEST_PATH == __file__:
             return
 
         for python_bin in self.config.get('python_bins', [['python2.6']]):
-            log.info('==== Running jobs for python_bin: %s ====' % python_bin)
+            #log.info('==== Running jobs for python_bin: %s ====' % python_bin)
 
             for job in self.config['jobs']:
 
                 given_input = job.get('input', None)
                 if given_input is None:
-                    given_input = os.path.join(self.TEST_PATH, 'input.txt')
+                    given_input = os.path.join(self.test_base_dir, 'input.txt')
                 if isinstance(given_input, basestring):
                     input_files = [given_input]
                 else:
@@ -149,12 +159,12 @@ class LiveTestCase(TestCase):
 
                 input_files = [os.path.abspath(p) for p in input_files]
 
-                self._test_job(python_bin, job, input_files)
+                for item in self._test_job(python_bin, job, input_files):
+                    yield item
 
     def _test_job(self, python_bin, job, input_files):
         for runner in self.config['runners']:
-
-            log.info('  == Running %s in runner: %s ==' % (job['job'], runner))
+            #log.info('  == Running %s in runner: %s ==' % (job['job'], runner))
 
             # todo: config.method
             conf_info = self.conf_info(job)
@@ -172,20 +182,48 @@ class LiveTestCase(TestCase):
                     '--hadoop-version', runner_version
                 ]
             else:
-                runner_args = ['-r', runner]
-                dummy_runner = EMRJobRunner(conf_path=config_path)
-                runner_version = dummy_runner._opts['hadoop_version']
+                if runner == 'emr':
+                    runner_args = ['-r', runner]
+                    dummy_runner = EMRJobRunner(conf_path=config_path)
+                    runner_version = dummy_runner._opts['hadoop_version']
+                elif runner == 'hadoop':
+                    runner_args = ['-r', runner]
+                    dummy_runner = HadoopJobRunner(conf_path=config_path)
+                    runner_version = dummy_runner._opts['hadoop_version']
+                elif runner == 'inline':
+                    runner_args = ['-r', runner]
+                    # make a local one anyway
+                    # because inline is dumb about being a dummy
+                    dummy_runner = LocalMRJobRunner(conf_path=config_path)
+                    runner_version = dummy_runner._opts['hadoop_version']
+                elif runner == 'local':
+                    runner_args = ['-r', runner]
+                    dummy_runner = LocalMRJobRunner(conf_path=config_path)
+                    runner_version = dummy_runner._opts['hadoop_version']
+                else:
+                    raise ValueError('Unknown runner: %s' % runner)
 
             args = config_args + self.config.get('args', [])
             call_args = (python_bin + ['-m', job['job']] +
                          runner_args +
                          args + input_files)
 
-            if runner == 'hadoop':
-                with hadoop(runner_version):
-                    self._test_job_with_args(job, call_args)
-            else:
+            name = "test_%s_%s_%s" % (
+                sanitize_name('_'.join(python_bin)),
+                runner,
+                job['job'])
+
+            def tester():
+                if runner == 'hadoop':
+                    self.start_hadoop(runner_version)
                 self._test_job_with_args(job, call_args)
+
+            tester.im_self = self
+            tester.im_class = self.__class__
+            tester.__name__ = name
+
+            setattr(self, name, tester)
+            yield tester
 
     def _test_job_with_args(self, job, call_args):
             log.info('  ' + str(call_args))
@@ -205,7 +243,7 @@ class LiveTestCase(TestCase):
             log.info('')
 
             with open(job.get('output',
-                              os.path.join(self.TEST_PATH,
+                              os.path.join(self.test_base_dir,
                                            'output.txt')),
                       'r') as f:
                 a_lines = sorted(f.read().splitlines())

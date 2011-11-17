@@ -1,10 +1,3 @@
-# runners: ['local', 'inline', 'hadoop-0.18', 'hadoop-20', 'emr-0.18', 'emr-0.20']
-runners: ['hadoop-0.20', 'hadoop-0.18']
+runners: ['local', 'inline', 'hadoop-0.18', 'hadoop-0.20'] #, 'emr-0.18', 'emr-0.20']
 jobs:
     - job: mrjob.examples.mr_word_freq_count
-      args: []
-      input: livetests/basic/input.txt      # this is the default
-      output: livetests/basic/output.txt    # this is the default
-      config:
-          method: command_line              # or env_var or null
-          path: livetests/basic/mrjob.conf  # this is the default
