@@ -1,3 +1,4 @@
 runners: ['local', 'inline', 'hadoop-0.18', 'hadoop-0.20', 'emr-0.18', 'emr-0.20']
+python_bins: ['python2.5', 'python2.6', 'python2.7']
 jobs:
-    - job: mrjob.examples.mr_word_freq_count
+    - job: livetests.basic.mr_word_freq_count
