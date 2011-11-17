@@ -70,7 +70,8 @@ class PoolingLiveTestCase(LiveTestCase):
                 reason = getattr(jf, 'laststatechangereason', '')
                 raise Exception('%s: %s' % (jf.state, reason))
             time.sleep(runner._opts['check_emr_status_every'])
-            sys.stderr.write(jf.state[0])
+            sys.stderr.write(jf.state[0:2])
+            sys.stderr.write('.')
             sys.stderr.flush()
             jf = runner._describe_jobflow()
 
@@ -120,8 +121,9 @@ class PoolingLiveTestCase(LiveTestCase):
         assert_equal(runner.usable_job_flows(), [])
 
     def test_do_join_better(self):
-        pool_runner = self._make_pooled_job_flow(pool_name='test_pool_name')
-        self._wait_for_job_flow_to_wait(pool_runner, num_ec2_instances=2)
+        pool_runner = self._make_pooled_job_flow(
+            pool_name='test_pool_name', num_ec2_instances=2)
+        self._wait_for_job_flow_to_wait(pool_runner)
         runner = self._make_runner(pool_emr_job_flows=True,
                                    emr_job_flow_pool_name='test_pool_name',
                                    num_ec2_instances=1)
