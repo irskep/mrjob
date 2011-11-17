@@ -218,13 +218,13 @@ class LiveTestCase(TestCase):
                 elif runner == 'hadoop':
                     runner_args = ['-r', runner]
                     dummy_runner = HadoopJobRunner(conf_path=config_path)
-                    runner_version = dummy_runner._opts['hadoop_version']
+                    runner_version = ''
                 elif runner == 'inline':
                     runner_args = ['-r', runner]
                     # make a local one anyway
                     # because inline is dumb about being a dummy
                     dummy_runner = LocalMRJobRunner(conf_path=config_path)
-                    runner_version = dummy_runner._opts['hadoop_version']
+                    runner_version = ''
                 elif runner == 'local':
                     runner_args = ['-r', runner]
                     dummy_runner = LocalMRJobRunner(conf_path=config_path)
@@ -244,8 +244,8 @@ class LiveTestCase(TestCase):
                 job['job'])
 
             def tester():
-                if runner == 'hadoop':
-                    self.start_hadoop(runner_version)
+                #if runner == 'hadoop':
+                #    self.start_hadoop(runner_version)
                 self._test_job_with_args(job, call_args)
 
             tester.im_self = self
