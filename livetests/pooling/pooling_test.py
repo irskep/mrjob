@@ -75,20 +75,23 @@ class PoolingLiveTestCase(LiveTestCase):
             sys.stderr.flush()
             jf = runner._describe_jobflow()
 
+    def _usable_job_flows_for_runner(self, runner):
+        return [jf.jobflow_id for jf in runner.usable_job_flows()]
+
     def test_none_exists_no_name(self):
         runner = self._make_runner(pool_emr_job_flows=True)
-        assert_equal(runner.usable_job_flows(), [])
+        assert_equal(self._usable_job_flows_for_runner(runner), [])
 
     def test_none_exists_named(self):
         runner = self._make_runner(pool_emr_job_flows=True,
                                    emr_job_flow_pool_name='test_pool_name')
-        assert_equal(runner.usable_job_flows(), [])
+        assert_equal(self._usable_job_flows_for_runner(runner), [])
 
     def test_one_exists_no_name(self):
         pool_runner = self._make_pooled_job_flow()
         self._wait_for_job_flow_to_wait(pool_runner)
         runner = self._make_runner(pool_emr_job_flows=True)
-        assert_equal(runner.usable_job_flows(),
+        assert_equal(self._usable_job_flows_for_runner(runner),
                      [pool_runner._emr_job_flow_id])
 
     def test_one_exists_named(self):
@@ -96,20 +99,20 @@ class PoolingLiveTestCase(LiveTestCase):
         self._wait_for_job_flow_to_wait(pool_runner)
         runner = self._make_runner(pool_emr_job_flows=True,
                                    emr_job_flow_pool_name='test_pool_name')
-        assert_equal(runner.usable_job_flows(),
-                     pool_runner._emr_job_flow_id)
+        assert_equal(self._usable_job_flows_for_runner(runner),
+                     [pool_runner._emr_job_flow_id])
 
     def test_dont_join_wrong_name(self):
         pool_runner = self._make_pooled_job_flow(pool_name='test_pool_name_NOT')
         self._wait_for_job_flow_to_wait(pool_runner)
         runner = self._make_runner(pool_emr_job_flows=True,
                                    emr_job_flow_pool_name='test_pool_name')
-        assert_equal(runner.usable_job_flows(), [])
+        assert_equal(self._usable_job_flows_for_runner(runner), [])
 
     def test_one_exists_but_is_not_waiting(self):
         pool_runner = self._make_pooled_job_flow()
         runner = self._make_runner(pool_emr_job_flows=True)
-        assert_equal(runner.usable_job_flows(), [])
+        assert_equal(self._usable_job_flows_for_runner(runner), [])
         pool_runner.make_emr_conn().terminate_jobflow(pool_runner._emr_job_flow_id)
 
     def test_dont_join_worse(self):
@@ -118,7 +121,7 @@ class PoolingLiveTestCase(LiveTestCase):
         runner = self._make_runner(pool_emr_job_flows=True,
                                    emr_job_flow_pool_name='test_pool_name',
                                    num_ec2_instances=2)
-        assert_equal(runner.usable_job_flows(), [])
+        assert_equal(self._usable_job_flows_for_runner(runner), [])
 
     def test_do_join_better(self):
         pool_runner = self._make_pooled_job_flow(
@@ -127,7 +130,7 @@ class PoolingLiveTestCase(LiveTestCase):
         runner = self._make_runner(pool_emr_job_flows=True,
                                    emr_job_flow_pool_name='test_pool_name',
                                    num_ec2_instances=1)
-        assert_equal(runner.usable_job_flows(),
+        assert_equal(self._usable_job_flows_for_runner(runner),
                      [pool_runner._emr_job_flow_id])
 
     def test_simultaneous_none_exist(self):
