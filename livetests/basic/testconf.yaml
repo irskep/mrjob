@@ -1,0 +1,9 @@
+runners: ['local', 'inline', 'emr']
+jobs:
+    - job: mrjob.examples.mr_word_freq_count
+      args: []
+      input: livetests/basic/input.txt      # this is the default
+      output: livetests/basic/output.txt    # this is the default
+      config:
+          method: command_line              # or env_var or null
+          path: livetests/basic/mrjob.conf  # this is the default
