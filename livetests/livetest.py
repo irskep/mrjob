@@ -101,13 +101,15 @@ class LiveTestCase(TestCase):
     @setup
     def init_hadoop(self):
         self.hadoop_base_dir = None
+        self.subprocess_env = dict(os.environ)
 
     @teardown
-    def stopteardown_hadoop(self):
+    def teardown_hadoop(self):
         if self.hadoop_base_dir:
             p = Popen([os.path.join(self.hadoop_base_dir,
                                     'bin', 'stop-all.sh')],
-                      stdin=PIPE, shell=True)
+                      stdin=PIPE, shell=True,
+                      env=self.subprocess_env)
             p.communicate()
 
     def start_hadoop(self, version):
@@ -118,6 +120,8 @@ class LiveTestCase(TestCase):
             base_dir = os.environ['HADOOP_HOME_20']
 
         os.environ['HADOOP_HOME'] = base_dir
+
+        self.subprocess_env['HADOOP_HOME'] = base_dir
 
         log.info("    Activating Hadoop version %s" % version)
         self.hadoop_base_dir = base_dir
@@ -132,7 +136,8 @@ class LiveTestCase(TestCase):
         #p.communicate()
 
         p = Popen([os.path.join(base_dir, 'bin', 'start-all.sh')],
-                   shell=True)
+                   shell=True,
+                   env=self.subprocess_env)
         p.communicate()
 
     def conf_info(self, job_data):
@@ -255,6 +260,7 @@ class LiveTestCase(TestCase):
                 call_args,
                 stdout=PIPE,
                 stderr=PIPE,
+                env=self.subprocess_env,
             )
 
             while True:

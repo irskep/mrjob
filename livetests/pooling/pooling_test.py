@@ -76,7 +76,7 @@ class PoolingLiveTestCase(LiveTestCase):
             jf = runner._describe_jobflow()
 
     def _usable_job_flows_for_runner(self, runner):
-        return [jf.jobflow_id for jf in runner.usable_job_flows()]
+        return [jf.jobflowid for jf in runner.usable_job_flows()]
 
     def test_none_exists_no_name(self):
         runner = self._make_runner(pool_emr_job_flows=True)
