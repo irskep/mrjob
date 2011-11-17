@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import sys
 import time
 
 from testify import assert_equal
@@ -64,8 +65,13 @@ class PoolingLiveTestCase(LiveTestCase):
     def _wait_for_job_flow_to_wait(self, runner):
         jf = runner._describe_jobflow()
         while jf.state != 'WAITING':
+            if jf.state in ('TERMINATED', 'COMPLETED', 'SHUTTING_DOWN',
+                            'FAILED'):
+                reason = getattr(jf, 'laststatechangereason', '')
+                raise Exception('%s: %s' % (jf.state, reason))
             time.sleep(runner._opts['check_emr_status_every'])
-            print 'Waiting for job flow to start (currently %s)' % jf.state
+            sys.stderr.write(jf.state[0])
+            sys.stderr.flush()
             jf = runner._describe_jobflow()
 
     def test_none_exists_no_name(self):
@@ -86,10 +92,17 @@ class PoolingLiveTestCase(LiveTestCase):
         assert_equal(pool_runner._emr_job_flow_id, usable_job_flows[0])
 
     def test_one_exists_named(self):
-        pass
+        pool_runner = self._make_pooled_job_flow(pool_name='test_pool_name')
+        self._wait_for_job_flow_to_wait(pool_runner)
+        runner = self._make_runner(pool_emr_job_flows=True,
+                                   emr_job_flow_pool_name='test_pool_name')
+        usable_job_flows = runner.usable_job_flows()
+        assert_equal(len(usable_job_flows), 1)
+        assert_equal(pool_runner._emr_job_flow_id, usable_job_flows[0])
 
     def test_simultaneous_none_exist(self):
-        pass
+        runner = self._make_runner(pool_emr_job_flows=True,
+                                   emr_job_flow_pool_name='test_pool_name')
 
     def test_simultaneous_one_exists(self):
         pass
