@@ -77,7 +77,11 @@ def sanitize_name(s):
 
 class LiveTestCase(TestCase):
 
+    # Path to the test file, e.g. /x/y/livetests/basic/basic_test.py
+    # should be overridden by every subclass, just copy this line
     TEST_PATH = __file__
+
+    GENERATE_FROM_CONFIG = True
 
     def __init__(self, *args, **kwargs):
         # don't run as abstract
@@ -117,16 +121,18 @@ class LiveTestCase(TestCase):
         log.info("    Activating Hadoop version %s" % version)
         self.hadoop_base_dir = base_dir
 
-        try:
-            shutil.rmtree('/tmp/hadoop-sjohnson')
-        except OSError:
-            pass # who cares
+        #try:
+        #    shutil.rmtree('/tmp/hadoop-sjohnson')
+        #except OSError:
+        #    pass # who cares
 
-        p = Popen([os.path.join(base_dir, 'bin', 'hadoop'), 'namenode', '-format'],
-                  stdin=PIPE)
-        p.communicate()
-        check_call([os.path.join(base_dir, 'bin', 'start-all.sh')],
+        #p = Popen([os.path.join(base_dir, 'bin', 'hadoop'), 'namenode', '-format'],
+        #          stdin=PIPE)
+        #p.communicate()
+
+        p = Popen([os.path.join(base_dir, 'bin', 'start-all.sh')],
                    shell=True)
+        p.communicate()
 
     def conf_info(self, job_data):
         conf_info = job_data.get('config', {})
@@ -143,8 +149,9 @@ class LiveTestCase(TestCase):
         return conf_info
 
     def runnable_test_methods(self):
-        for item in self._make_tests():
-            yield item
+        if self.GENERATE_FROM_CONFIG:
+            for item in self._make_tests():
+                yield item
 
         for item in super(LiveTestCase, self).runnable_test_methods():
             yield item
@@ -250,7 +257,7 @@ class LiveTestCase(TestCase):
                 #log.info(textwrap.fill(line, width=80,
                 #                       initial_indent='    ',
                 #                       subsequent_indent='      '))
-            log.info('')
+            #log.info('')
 
             with open(job.get('output',
                               os.path.join(self.test_base_dir,
