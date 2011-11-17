@@ -135,7 +135,8 @@ class LiveTestCase(TestCase):
                         if not line:
                             break
                         log.info(textwrap.fill(line, width=80,
-                                               initial_indent='    '))
+                                               initial_indent='    ',
+                                               subsequent_indent='      '))
                     log.info('')
 
                     with open(job.get('output',
