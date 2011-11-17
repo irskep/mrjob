@@ -21,7 +21,7 @@ path, or environment variable), and the text of the expected output.
 
 Example::
 
-    runners: ['emr', 'hadoop', 'inline', 'local']
+    runners: ['emr-0.18', 'hadoop-0.20', 'inline', 'local']
     python_bins:            # default: [['python2.6']]
         - ['python2.5']
         - ['python2.6']
@@ -41,8 +41,11 @@ Example::
 
 from __future__ import with_statement
 
+from contextlib import contextmanager
+from distutils.version import LooseVersion
 import logging
 import os
+from subprocess import check_call
 from subprocess import Popen
 from subprocess import PIPE
 import sys
@@ -60,6 +63,36 @@ import yaml
 logging.basicConfig()
 log = logging.getLogger('livetests')
 log.addHandler(logging.StreamHandler(sys.stderr))
+
+
+def start_hadoop(base_dir):
+    p = Popen([os.path.join(base_dir, 'bin', 'hadoop'), 'namenode', '-format'],
+              stdin=PIPE)
+    p.communicate()
+    check_call([os.path.join(base_dir, 'bin', 'start-all.sh')],
+               shell=True)
+
+def stop_hadoop(base_dir):
+    p = Popen([os.path.join(base_dir, 'bin', 'stop-all.sh')],
+              stdin=PIPE, shell=True)
+    p.communicate()
+
+
+@contextmanager
+def hadoop(version):
+    if LooseVersion(version) < LooseVersion('0.20'):
+        base_dir = os.environ['HADOOP_HOME_18']
+    else:
+        base_dir = os.environ['HADOOP_HOME_20']
+
+    os.environ['HADOOP_HOME'] = base_dir
+
+    log.info("    Activating Hadoop version %s" % version)
+    start_hadoop(base_dir)
+
+    yield
+
+    stop_hadoop(base_dir)
 
 
 class LiveTestCase(TestCase):
@@ -110,39 +143,65 @@ class LiveTestCase(TestCase):
 
                 input_files = [os.path.abspath(p) for p in input_files]
 
-                for runner in self.config['runners']:
-                    log.info('  == Running %s in runner: %s ==' % (job['job'], runner))
-                    # todo: co)fig.method
-                    conf_info = self.conf_info(job)
-                    if conf_info['method'] is None:
-                        config_args = []
-                    else:
-                        config_args = ['--conf-path',
-                                       os.path.abspath(conf_info['path'])]
-                    args = config_args + self.config.get('args', [])
-                    call_args = (python_bin + ['-m', job['job']] +
-                                 ['-r', runner] +
-                                 args + input_files)
-                    log.info('  ' + str(call_args))
-                    p = Popen(
-                        call_args,
-                        stdout=PIPE,
-                        stderr=PIPE,
-                    )
+                self._test_job(python_bin, job, input_files)
 
-                    while True:
-                        line = p.stderr.readline()
-                        if not line:
-                            break
-                        log.info(textwrap.fill(line, width=80,
-                                               initial_indent='    ',
-                                               subsequent_indent='      '))
-                    log.info('')
+    def _test_job(self, python_bin, job, input_files):
+        for runner in self.config['runners']:
 
-                    with open(job.get('output',
-                                      os.path.join(self.TEST_PATH,
-                                                   'output.txt')),
-                              'r') as f:
-                        a_lines = sorted(f.read().splitlines())
-                        b_lines = sorted(p.communicate()[0].splitlines())
-                        assert_equal(a_lines, b_lines)
+            log.info('  == Running %s in runner: %s ==' % (job['job'], runner))
+
+            # todo: config.method
+            conf_info = self.conf_info(job)
+            if conf_info['method'] is None:
+                config_path = None
+                config_args = []
+            else:
+                config_path = os.path.abspath(conf_info['path'])
+                config_args = ['--conf-path', config_path]
+
+            if '-' in runner:
+                runner, runner_version = runner.split('-', 2)
+                runner_args = [
+                    '-r', runner,
+                    '--hadoop-version', runner_version
+                ]
+            else:
+                runner_args = ['-r', runner]
+                dummy_runner = EMRJobRunner(conf_path=config_path)
+                runner_version = dummy_runner._opts['hadoop_version']
+
+            args = config_args + self.config.get('args', [])
+            call_args = (python_bin + ['-m', job['job']] +
+                         runner_args +
+                         args + input_files)
+
+            if runner == 'hadoop':
+                with hadoop(runner_version):
+                    self._test_job_with_args(job, call_args)
+            else:
+                self._test_job_with_args(job, call_args)
+
+    def _test_job_with_args(self, job, call_args):
+            log.info('  ' + str(call_args))
+            p = Popen(
+                call_args,
+                stdout=PIPE,
+                stderr=PIPE,
+            )
+
+            while True:
+                line = p.stderr.readline()
+                if not line:
+                    break
+                log.info(textwrap.fill(line, width=80,
+                                       initial_indent='    ',
+                                       subsequent_indent='      '))
+            log.info('')
+
+            with open(job.get('output',
+                              os.path.join(self.TEST_PATH,
+                                           'output.txt')),
+                      'r') as f:
+                a_lines = sorted(f.read().splitlines())
+                b_lines = sorted(p.communicate()[0].splitlines())
+                assert_equal(a_lines, b_lines)

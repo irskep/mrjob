@@ -1,4 +1,5 @@
-runners: ['local', 'inline', 'emr']
+# runners: ['local', 'inline', 'hadoop-0.18', 'hadoop-20', 'emr-0.18', 'emr-0.20']
+runners: ['hadoop-0.20', 'hadoop-0.18']
 jobs:
     - job: mrjob.examples.mr_word_freq_count
       args: []
