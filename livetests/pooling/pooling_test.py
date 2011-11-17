@@ -151,8 +151,11 @@ class PoolingLiveTestCase(LiveTestCase):
         runner2 = self._make_runner(pool_emr_job_flows=True,
                                     emr_job_flow_pool_name='test_pool_name')
 
-        jf_id_canonical = self._make_pooled_job_flow(
-            pool_name='test_pool_name')._emr_job_flow_id
+        pool_runner_1 = self._make_pooled_job_flow(
+            pool_name='test_pool_name')
+        jf_id_canonical = pool_runner_1._emr_job_flow_id
+
+        self._wait_for_job_flow_to_wait(pool_runner_1)
 
         jf_id_1 = runner1.find_job_flow()
         jf_id_2 = runner2.find_job_flow()
@@ -170,6 +173,14 @@ class PoolingLiveTestCase(LiveTestCase):
             pool_name='test_pool_name')._emr_job_flow_id
         jf_id_canonical_2 = self._make_pooled_job_flow(
             pool_name='test_pool_name')._emr_job_flow_id
+
+        pool_runner_1 = self._make_pooled_job_flow(
+            pool_name='test_pool_name')
+        jf_id_canonical_1 = pool_runner_1._emr_job_flow_id
+
+        pool_runner_2 = self._make_pooled_job_flow(
+            pool_name='test_pool_name')
+        jf_id_canonical_2 = pool_runner_2._emr_job_flow_id
 
         # find_job_flow() acquires locks, whereas usable_job_flows() does not
         jf_id_1 = runner1.find_job_flow()
