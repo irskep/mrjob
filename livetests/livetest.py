@@ -45,6 +45,7 @@ from contextlib import contextmanager
 from distutils.version import LooseVersion
 import logging
 import os
+import shutil
 from subprocess import check_call
 from subprocess import Popen
 from subprocess import PIPE
@@ -66,6 +67,11 @@ log.addHandler(logging.StreamHandler(sys.stderr))
 
 
 def start_hadoop(base_dir):
+    try:
+        shutil.rmtree('/tmp/hadoop-sjohnson')
+    except OSError:
+        pass # who cares
+
     p = Popen([os.path.join(base_dir, 'bin', 'hadoop'), 'namenode', '-format'],
               stdin=PIPE)
     p.communicate()
