@@ -194,10 +194,16 @@ class LiveTestCase(TestCase):
 
             if '-' in runner:
                 runner, runner_version = runner.split('-', 2)
-                runner_args = [
-                    '-r', runner,
-                    '--hadoop-version', runner_version
-                ]
+                if runner == 'emr':
+                    runner_args = [
+                        '-r', runner,
+                        '--hadoop-version', runner_version
+                    ]
+                else:
+                    # hadoop figures out the version by itself
+                    runner_args = [
+                        '-r', runner,
+                    ]
             else:
                 if runner == 'emr':
                     runner_args = ['-r', runner]
