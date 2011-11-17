@@ -87,37 +87,92 @@ class PoolingLiveTestCase(LiveTestCase):
         pool_runner = self._make_pooled_job_flow()
         self._wait_for_job_flow_to_wait(pool_runner)
         runner = self._make_runner(pool_emr_job_flows=True)
-        usable_job_flows = runner.usable_job_flows()
-        assert_equal(len(usable_job_flows), 1)
-        assert_equal(pool_runner._emr_job_flow_id, usable_job_flows[0])
+        assert_equal(runner.usable_job_flows(),
+                     [pool_runner._emr_job_flow_id])
 
     def test_one_exists_named(self):
         pool_runner = self._make_pooled_job_flow(pool_name='test_pool_name')
         self._wait_for_job_flow_to_wait(pool_runner)
         runner = self._make_runner(pool_emr_job_flows=True,
                                    emr_job_flow_pool_name='test_pool_name')
-        usable_job_flows = runner.usable_job_flows()
-        assert_equal(len(usable_job_flows), 1)
-        assert_equal(pool_runner._emr_job_flow_id, usable_job_flows[0])
-
-    def test_simultaneous_none_exist(self):
-        runner = self._make_runner(pool_emr_job_flows=True,
-                                   emr_job_flow_pool_name='test_pool_name')
-
-    def test_simultaneous_one_exists(self):
-        pass
-
-    def test_simultaneous_two_exist(self):
-        pass
-
-    def test_one_exists_but_is_busy(self):
-        pass
-
-    def test_dont_join_worse(self):
-        pass
-
-    def test_do_join_better(self):
-        pass
+        assert_equal(runner.usable_job_flows(),
+                     pool_runner._emr_job_flow_id)
 
     def test_dont_join_wrong_name(self):
-        pass
+        pool_runner = self._make_pooled_job_flow(pool_name='test_pool_name_NOT')
+        self._wait_for_job_flow_to_wait(pool_runner)
+        runner = self._make_runner(pool_emr_job_flows=True,
+                                   emr_job_flow_pool_name='test_pool_name')
+        assert_equal(runner.usable_job_flows(), [])
+
+    def test_one_exists_but_is_not_waiting(self):
+        pool_runner = self._make_pooled_job_flow()
+        runner = self._make_runner(pool_emr_job_flows=True)
+        assert_equal(runner.usable_job_flows(), [])
+        pool_runner.make_emr_conn().terminate_jobflow(pool_runner._emr_job_flow_id)
+
+    def test_dont_join_worse(self):
+        pool_runner = self._make_pooled_job_flow(pool_name='test_pool_name')
+        self._wait_for_job_flow_to_wait(pool_runner)
+        runner = self._make_runner(pool_emr_job_flows=True,
+                                   emr_job_flow_pool_name='test_pool_name',
+                                   num_ec2_instances=2)
+        assert_equal(runner.usable_job_flows(), [])
+
+    def test_do_join_better(self):
+        pool_runner = self._make_pooled_job_flow(pool_name='test_pool_name')
+        self._wait_for_job_flow_to_wait(pool_runner, num_ec2_instances=2)
+        runner = self._make_runner(pool_emr_job_flows=True,
+                                   emr_job_flow_pool_name='test_pool_name',
+                                   num_ec2_instances=1)
+        assert_equal(runner.usable_job_flows(),
+                     [pool_runner._emr_job_flow_id])
+
+    def test_simultaneous_none_exist(self):
+        runner1 = self._make_runner(pool_emr_job_flows=True,
+                                    emr_job_flow_pool_name='test_pool_name')
+        runner2 = self._make_runner(pool_emr_job_flows=True,
+                                    emr_job_flow_pool_name='test_pool_name')
+
+        jf_id_1 = runner1.find_job_flow()
+        jf_id_2 = runner2.find_job_flow()
+
+        assert_equal(jf_id_1, None)
+        assert_equal(jf_id_2, None)
+
+    def test_simultaneous_one_exists(self):
+        runner1 = self._make_runner(pool_emr_job_flows=True,
+                                    emr_job_flow_pool_name='test_pool_name')
+        runner2 = self._make_runner(pool_emr_job_flows=True,
+                                    emr_job_flow_pool_name='test_pool_name')
+
+        jf_id_canonical = self._make_pooled_job_flow(
+            pool_name='test_pool_name')._emr_job_flow_id
+
+        jf_id_1 = runner1.find_job_flow()
+        jf_id_2 = runner2.find_job_flow()
+
+        assert_equal(jf_id_1, jf_id_canonical)
+        assert_equal(jf_id_2, None)
+
+    def test_simultaneous_two_exist(self):
+        runner1 = self._make_runner(pool_emr_job_flows=True,
+                                    emr_job_flow_pool_name='test_pool_name')
+        runner2 = self._make_runner(pool_emr_job_flows=True,
+                                    emr_job_flow_pool_name='test_pool_name')
+
+        jf_id_canonical_1 = self._make_pooled_job_flow(
+            pool_name='test_pool_name')._emr_job_flow_id
+        jf_id_canonical_2 = self._make_pooled_job_flow(
+            pool_name='test_pool_name')._emr_job_flow_id
+
+        # find_job_flow() acquires locks, whereas usable_job_flows() does not
+        jf_id_1 = runner1.find_job_flow()
+        jf_id_2 = runner2.find_job_flow()
+
+        if jf_id_1 == jf_id_canonical_1:
+            assert_equal(jf_id_1, jf_id_canonical_1) # lol
+            assert_equal(jf_id_2, jf_id_canonical_2)
+        else:
+            assert_equal(jf_id_1, jf_id_canonical_2)
+            assert_equal(jf_id_2, jf_id_canonical_1)
