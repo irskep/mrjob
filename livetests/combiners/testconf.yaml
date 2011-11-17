@@ -1,0 +1,3 @@
+runners: ['local', 'inline', 'hadoop-0.18', 'hadoop-0.20'] #, 'emr-0.18', 'emr-0.20']
+jobs:
+    - job: livetests.combiners.mr_double_word_freq_count
