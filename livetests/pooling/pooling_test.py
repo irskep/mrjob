@@ -1,8 +1,25 @@
+# Copyright 2009-2011 Yelp
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import os
+import time
 
+from testify import assert_equal
 from testify import setup
+from testify import teardown
 
 from livetests.livetest import LiveTestCase
+from mrjob.emr import EMRJobRunner
 
 class PoolingLiveTestCase(LiveTestCase):
     # this is required
@@ -26,30 +43,46 @@ class PoolingLiveTestCase(LiveTestCase):
         test_conf_path = os.path.join(self.test_base_dir, 'mrjob.conf')
 
         if os.path.exists(test_conf_path):
-            config_path = conf_info.get('path', test_conf_path)
+            return test_conf_path
         else:
-            config_path = conf_info.get('path', livetest_conf_path)
+            return livetest_conf_path
 
     def _make_runner(self, **kwargs):
         runner = EMRJobRunner(conf_path=self._config_path(),
                               **kwargs)
         return runner
 
-    def _make_pooled_job_flow(self, pool_name=None, **kwargs)
+    def _make_pooled_job_flow(self, pool_name=None, **kwargs):
         runner = EMRJobRunner(conf_path=self._config_path(),
                               pool_emr_job_flows=True,
-                              emr_job_flow_pool_Name=pool_name,
+                              emr_job_flow_pool_name=pool_name,
                               **kwargs)
-        return runner.make_persistent_job_flow()
+        runner.make_persistent_job_flow()
+        return runner
+
+    def _wait_for_job_flow_to_wait(self, runner):
+        jf = runner._describe_jobflow()
+        while jf.state != 'WAITING':
+            time.sleep(runner._opts['check_emr_status_every'])
+            print 'Waiting for job flow to start (currently %s)' % jf.state
+            jf = runner._describe_jobflow()
 
     def test_none_exists_no_name(self):
-        pass
+        runner = self._make_runner(pool_emr_job_flows=True)
+        assert_equal(runner.usable_job_flows(), [])
 
     def test_none_exists_named(self):
-        pass
+        runner = self._make_runner(pool_emr_job_flows=True,
+                                   emr_job_flow_pool_name='test_pool_name')
+        assert_equal(runner.usable_job_flows(), [])
 
     def test_one_exists_no_name(self):
-        pass
+        pool_runner = self._make_pooled_job_flow()
+        self._wait_for_job_flow_to_wait(pool_runner)
+        runner = self._make_runner(pool_emr_job_flows=True)
+        usable_job_flows = runner.usable_job_flows()
+        assert_equal(len(usable_job_flows), 1)
+        assert_equal(pool_runner._emr_job_flow_id, usable_job_flows[0])
 
     def test_one_exists_named(self):
         pass

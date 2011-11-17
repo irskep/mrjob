@@ -91,9 +91,10 @@ class LiveTestCase(TestCase):
         self.test_base_dir = os.path.split(os.path.abspath(self.TEST_PATH))[0]
         self.livetest_base_dir = os.path.split(os.path.abspath(__file__))[0]
 
-        with open(os.path.join(self.test_base_dir,
-                               'testconf.yaml'), 'r') as f:
-            self.config = yaml.load(f)
+        if self.GENERATE_FROM_CONFIG:
+            with open(os.path.join(self.test_base_dir,
+                                   'testconf.yaml'), 'r') as f:
+                self.config = yaml.load(f)
 
         super(LiveTestCase, self).__init__(*args, **kwargs)
 
