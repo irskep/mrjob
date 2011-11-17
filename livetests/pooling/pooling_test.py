@@ -57,7 +57,8 @@ class PoolingLiveTestCase(LiveTestCase):
                               pool_emr_job_flows=True,
                               emr_job_flow_pool_name=pool_name,
                               **kwargs)
-        runner.make_persistent_job_flow()
+        jf_id = runner.make_persistent_job_flow()
+        self.job_flow_ids_to_terminate.append(jf_id)
         return runner
 
     def _wait_for_job_flow_to_wait(self, runner):
