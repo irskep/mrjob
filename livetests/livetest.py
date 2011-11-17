@@ -237,9 +237,10 @@ class LiveTestCase(TestCase):
                          runner_args +
                          args + input_files)
 
-            name = "test_%s_%s_%s" % (
+            name = "test_%s_%s_%s_%s" % (
                 sanitize_name('_'.join(python_bin)),
                 runner,
+                sanitize_name(runner_version),
                 job['job'])
 
             def tester():
