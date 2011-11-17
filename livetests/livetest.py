@@ -68,7 +68,7 @@ from mrjob.inline import InlineMRJobRunner
 
 logging.basicConfig()
 log = logging.getLogger('livetests')
-log.addHandler(logging.StreamHandler(sys.stderr))
+#log.addHandler(logging.StreamHandler(sys.stderr))
 
 
 def sanitize_name(s):
@@ -247,9 +247,9 @@ class LiveTestCase(TestCase):
                 line = p.stderr.readline()
                 if not line:
                     break
-                log.info(textwrap.fill(line, width=80,
-                                       initial_indent='    ',
-                                       subsequent_indent='      '))
+                #log.info(textwrap.fill(line, width=80,
+                #                       initial_indent='    ',
+                #                       subsequent_indent='      '))
             log.info('')
 
             with open(job.get('output',
