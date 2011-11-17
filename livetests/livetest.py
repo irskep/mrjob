@@ -83,7 +83,10 @@ class LiveTestCase(TestCase):
         # don't run as abstract
         if self.TEST_PATH == __file__:
             return
+
         self.test_base_dir = os.path.split(os.path.abspath(self.TEST_PATH))[0]
+        self.livetest_base_dir = os.path.split(os.path.abspath(__file__))[0]
+
         with open(os.path.join(self.test_base_dir,
                                'testconf.yaml'), 'r') as f:
             self.config = yaml.load(f)
@@ -128,8 +131,15 @@ class LiveTestCase(TestCase):
     def conf_info(self, job_data):
         conf_info = job_data.get('config', {})
         conf_info['method'] = conf_info.get('method', 'command_line')
-        conf_info['path'] = conf_info.get(
-            'path', os.path.join(self.test_base_dir, 'mrjob.conf'))
+
+        livetest_conf_path = os.path.join(self.livetest_base_dir, 'mrjob.conf')
+        test_conf_path = os.path.join(self.test_base_dir, 'mrjob.conf')
+
+        if os.path.exists(test_conf_path):
+            conf_info['path'] = conf_info.get('path', test_conf_path)
+        else:
+            conf_info['path'] = conf_info.get('path', livetest_conf_path)
+
         return conf_info
 
     def runnable_test_methods(self):
