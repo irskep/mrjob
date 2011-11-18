@@ -215,6 +215,7 @@ class HadoopJobRunner(MRJobRunner):
         })
 
     def get_hadoop_version(self):
+        """Invoke the hadoop executable to determine its version"""
         if not self._hadoop_version:
             stdout = self._invoke_hadoop(['version'], return_stdout=True)
             if stdout:
@@ -589,10 +590,6 @@ class HadoopJobRunner(MRJobRunner):
         else:
             return proc.returncode
 
-    def _process_stderr_from_hadoop(self, stderr):
-        for line in stderr:
-            log.info('HADOOP: %s' % line.rstrip('\n'))
-
     def _cleanup_local_scratch(self):
         super(HadoopJobRunner, self)._cleanup_local_scratch()
 
@@ -703,7 +700,7 @@ class HadoopJobRunner(MRJobRunner):
         for line in StringIO(stdout):
             fields = line.rstrip('\n').split()
             # expect lines like:
-            # -rw-r--r--   3 dave users       3276 2010-01-13 14:00 /user/dave/foox
+            # -rw-r--r--   3 dave users       3276 2010-01-13 14:00 /foo/bar
             if len(fields) < 8:
                 raise Exception('unexpected ls line from hadoop: %r' % line)
             # ignore directories
