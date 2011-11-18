@@ -21,7 +21,7 @@ path, or environment variable), and the text of the expected output.
 
 Example::
 
-    runners: ['emr-0.18', 'hadoop-0.20', 'inline', 'local']
+    runners: ['emr-0.18', 'hadoop', 'inline', 'local']
     python_bins:            # default: [['python2.6']]
         - ['python2.5']
         - ['python2.6']
@@ -98,48 +98,6 @@ class LiveTestCase(TestCase):
 
         super(LiveTestCase, self).__init__(*args, **kwargs)
 
-    @setup
-    def init_hadoop(self):
-        self.hadoop_base_dir = None
-        self.subprocess_env = dict(os.environ)
-
-    @teardown
-    def teardown_hadoop(self):
-        if self.hadoop_base_dir:
-            p = Popen([os.path.join(self.hadoop_base_dir,
-                                    'bin', 'stop-all.sh')],
-                      stdin=PIPE, shell=True,
-                      env=self.subprocess_env)
-            p.communicate()
-
-    def start_hadoop(self, version):
-
-        if LooseVersion(version) < LooseVersion('0.20'):
-            base_dir = os.environ['HADOOP_HOME_18']
-        else:
-            base_dir = os.environ['HADOOP_HOME_20']
-
-        os.environ['HADOOP_HOME'] = base_dir
-
-        self.subprocess_env['HADOOP_HOME'] = base_dir
-
-        log.info("    Activating Hadoop version %s" % version)
-        self.hadoop_base_dir = base_dir
-
-        #try:
-        #    shutil.rmtree('/tmp/hadoop-sjohnson')
-        #except OSError:
-        #    pass # who cares
-
-        #p = Popen([os.path.join(base_dir, 'bin', 'hadoop'), 'namenode', '-format'],
-        #          stdin=PIPE)
-        #p.communicate()
-
-        p = Popen([os.path.join(base_dir, 'bin', 'start-all.sh')],
-                   shell=True,
-                   env=self.subprocess_env)
-        p.communicate()
-
     def conf_info(self, job_data):
         conf_info = job_data.get('config', {})
         conf_info['method'] = conf_info.get('method', 'command_line')
@@ -206,10 +164,8 @@ class LiveTestCase(TestCase):
                         '--hadoop-version', runner_version
                     ]
                 else:
-                    # hadoop figures out the version by itself
-                    runner_args = [
-                        '-r', runner,
-                    ]
+                    raise ValueError('You can only specify a Hadoop version'
+                                     ' for the EMR runner')
             else:
                 if runner == 'emr':
                     runner_args = ['-r', runner]
@@ -244,8 +200,6 @@ class LiveTestCase(TestCase):
                 job['job'])
 
             def tester():
-                #if runner == 'hadoop':
-                #    self.start_hadoop(runner_version)
                 self._test_job_with_args(job, call_args)
 
             tester.im_self = self
