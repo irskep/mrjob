@@ -26,8 +26,10 @@ import random
 import re
 import shutil
 import sys
+from subprocess import CalledProcessError
 from subprocess import Popen
 from subprocess import PIPE
+from subprocess import check_call
 import tempfile
 
 try:
@@ -72,8 +74,10 @@ CLEANUP_CHOICES = ['ALL', 'LOCAL_SCRATCH', 'LOGS', 'NONE', 'REMOTE_SCRATCH',
 #: DEPRECATED: the default cleanup-on-success option: ``'IF_SUCCESSFUL'``
 CLEANUP_DEFAULT = 'IF_SUCCESSFUL'
 
-
 _STEP_RE = re.compile(r'^M?C?R?$')
+
+# buffer for piping files into sort on Windows
+_BUFFER_SIZE = 4096
 
 
 class MRJobRunner(object):
@@ -289,8 +293,17 @@ class MRJobRunner(object):
 
         # combine all of these options
         # only __init__() methods should modify self._opts!
-        self._opts = self.combine_opts(blank_opts, self._default_opts(),
-                                       mrjob_conf_opts, opts)
+        opt_dicts = [blank_opts, self._default_opts(),
+                     mrjob_conf_opts, opts]
+        self._opts = self.combine_opts(*opt_dicts)
+        # keep track of where in the order opts were specified,
+        # to handle opts that affect the same thing (e.g. ec2_*instance_type)
+        self._opt_priority = dict((opt, -1) for opt in self._opts)
+        for priority, opt_dict in enumerate(opt_dicts):
+            if opt_dict:
+                for opt, value in opt_dict.iteritems():
+                    if value is not None:
+                        self._opt_priority[opt] = priority
 
         # we potentially have a lot of files to copy, so we keep track
         # of them as a list of dictionaries, with the following keys:
@@ -403,6 +416,10 @@ class MRJobRunner(object):
         # info about our steps. this is basically a cache for self._get_steps()
         self._steps = None
 
+        # if this is True, we have to pipe input into the sort command
+        # rather than feed it multiple files
+        self._sort_is_windows_sort = None
+
     @classmethod
     def _allowed_opts(cls):
         """A list of the options that can be passed to :py:meth:`__init__`
@@ -496,9 +513,21 @@ class MRJobRunner(object):
         output_dir = self.get_output_dir()
         log.info('Streaming final output from %s' % output_dir)
 
+        def split_path(path):
+            while True:
+                base, name = os.path.split(path)
+
+                # no more elements
+                if not name:
+                    break
+
+                yield name
+
+                path = base
+
         for filename in self.ls(output_dir):
-            if ('/_logs/' not in filename and
-                not filename.endswith('/_SUCCESS')):
+            subpath = filename[len(output_dir):]
+            if not any(name.startswith('_') for name in split_path(subpath)):
                 for line in self._cat_file(filename):
                     yield line
 
@@ -1093,7 +1122,7 @@ class MRJobRunner(object):
 
         contents = self._wrapper_script_content()
         for line in StringIO(contents):
-            log.debug('WRAPPER: ' + line.rstrip('\n'))
+            log.debug('WRAPPER: ' + line.rstrip('\r\n'))
 
         f = open(path, 'w')
         f.write(contents)
@@ -1211,3 +1240,70 @@ class MRJobRunner(object):
                 args.extend(['-jobconf', '%s=%s' % (key, value)])
 
         return args
+
+    def _invoke_sort(self, input_paths, output_path):
+        """Use the local sort command to sort one or more input files. Raise
+        an exception if there is a problem.
+
+        This is is just a wrapper to handle limitations of Windows sort
+        (see Issue #288).
+
+        :type input_paths: list of str
+        :param input_paths: paths of one or more input files
+        :type output_path: str
+        :param output_path: where to pipe sorted output into
+        """
+        if not input_paths:
+            raise ValueError('Must specify at least one input path.')
+
+        # ignore locale when sorting
+        env = os.environ.copy()
+        env['LC_ALL'] = 'C'
+
+        log.info('writing to %s' % output_path)
+
+        err_path = os.path.join(self._get_local_tmp_dir(), 'sort-stderr')
+
+        # assume we're using UNIX sort unless we know otherwise
+        if (not self._sort_is_windows_sort) or len(input_paths) == 1:
+            with open(output_path, 'w') as output:
+                with open(err_path, 'w') as err:
+                    args = ['sort'] + list(input_paths)
+                    log.info('> %s' % cmd_line(args))
+                    try:
+                        check_call(args, stdout=output, stderr=err, env=env)
+                        return
+                    except CalledProcessError:
+                        pass
+
+        # Looks like we're using Windows sort
+        self._sort_is_windows_sort = True
+
+        log.info('Piping files into sort for Windows compatibility')
+        with open(output_path, 'w') as output:
+            with open(err_path, 'w') as err:
+                args = ['sort']
+                log.info('> %s' % cmd_line(args))
+                proc = Popen(args, stdin=PIPE, stdout=output, stderr=err,
+                             env=env)
+
+                # shovel bytes into the sort process
+                for input_path in input_paths:
+                    with open(input_path) as input:
+                        while True:
+                            buf = input.read(_BUFFER_SIZE)
+                            if not buf:
+                                break
+                            proc.stdin.write(buf)
+
+                proc.stdin.close()
+                proc.wait()
+
+                if proc.returncode == 0:
+                    return
+
+        # looks like there was a problem. log it and raise an error
+        with open(err_path) as err:
+            for line in err:
+                log.error('STDERR: %s' % line.rstrip('\r\n'))
+        raise CalledProcessError(proc.returncode, args)

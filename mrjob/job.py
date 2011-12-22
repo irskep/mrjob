@@ -130,6 +130,20 @@ from mrjob.util import read_input
 log = logging.getLogger('mrjob.job')
 
 
+# all the parameters you can specify when definining a job step
+_JOB_STEP_PARAMS = (
+    'combiner',
+    'combiner_init',
+    'combiner_final',
+    'mapper',
+    'mapper_init',
+    'mapper_final',
+    'reducer',
+    'reducer_init',
+    'reducer_final',
+)
+
+
 # used by mr() below, to fake no mapper
 def _IDENTITY_MAPPER(key, value):
     yield key, value
@@ -361,32 +375,23 @@ class MRJob(object):
 
         :return: a list of steps constructed with :py:meth:`mr`
         """
-        # Use mapper(), mapper_final(), and reducer() only if they've been
-        # re-defined
+        # Use mapper(), reducer() etc. only if they've been re-defined
         kwargs = dict((func_name, getattr(self, func_name))
-                      for func_name in ('mapper',
-                                        'mapper_init',
-                                        'mapper_final',
-                                        'reducer',
-                                        'reducer_init',
-                                        'reducer_final',
-                                        'combiner',
-                                        'combiner_init',
-                                        'combiner_final')
+                      for func_name in _JOB_STEP_PARAMS
                       if (getattr(self, func_name).im_func is not
                           getattr(MRJob, func_name).im_func))
 
         return [self.mr(**kwargs)]
 
     @classmethod
-    def mr(cls, mapper=None, reducer=None, combiner=None,
-           mapper_init=None, mapper_final=None,
-           reducer_init=None, reducer_final=None,
-           combiner_init=None, combiner_final=None):
+    def mr(cls, mapper=None, reducer=None, _mapper_final=None, **kwargs):
         """Define a step (mapper, reducer, and/or any combination of
         mapper_init, reducer_final, etc.) for your job.
 
         Used by :py:meth:`steps`. (Don't re-define this, just call it!)
+
+        Accepts the following keyword arguments. For convenience, you may
+        specify *mapper* and *reducer* as positional arguments as well.
 
         :param mapper: function with same function signature as
                        :py:meth:`mapper`, or ``None`` for an identity mapper.
@@ -396,36 +401,49 @@ class MRJob(object):
                          :py:meth:`combiner`, or ``None`` for no combiner.
         :param mapper_init: function with same function signature as
                             :py:meth:`mapper_init`, or ``None`` for no initial
-                            mapper action. Please invoke this as a keyword
-                            argument.
+                            mapper action.
         :param mapper_final: function with same function signature as
                              :py:meth:`mapper_final`, or ``None`` for no final
-                             mapper action. Please invoke this as a keyword
-                             argument.
+                             mapper action.
         :param reducer_init: function with same function signature as
                              :py:meth:`reducer_init`, or ``None`` for no
-                             initial reducer action. Please invoke this as a
-                             keyword argument.
+                             initial reducer action.
         :param reducer_final: function with same function signature as
                               :py:meth:`reducer_final`, or ``None`` for no
-                              final reducer action. Please invoke this as a
-                              keyword argument.
+                              final reducer action.
         :param combiner_init: function with same function signature as
                               :py:meth:`combiner_init`, or ``None`` for no
-                              initial combiner action. Please invoke this as a
-                              keyword argument.
+                              initial combiner action.
         :param combiner_final: function with same function signature as
                                :py:meth:`combiner_final`, or ``None`` for no
-                               final combiner action. Please invoke this as a
-                               keyword argument.
+                               final combiner action.
 
         Please consider the way we represent steps to be opaque, and expect
         it to change in future versions of ``mrjob``.
         """
-        step = dict(mapper=mapper, reducer=reducer, combiner=combiner,
-                    mapper_init=mapper_init, mapper_final=mapper_final,
-                    reducer_init=reducer_init, reducer_final=reducer_final,
-                    combiner_init=combiner_init, combiner_final=combiner_final)
+        # limit which keyword args can be specified
+        bad_kwargs = sorted(set(kwargs) - set(_JOB_STEP_PARAMS))
+        if bad_kwargs:
+            raise TypeError(
+                'mr() got an unexpected keyword argument %r' % bad_kwargs[0])
+
+        # handle incorrect usage of positional args. This was wrong in mrjob
+        # v0.2 as well, but we didn't issue a warning.
+        if _mapper_final is not None:
+            if 'mapper_final' in kwargs:
+                raise TypeError("mr() got multiple values for keyword argument"
+                                " 'mapper_final'")
+            else:
+                log.warn(
+                    'mapper_final should be specified as a keyword argument to'
+                    ' mr(), not a positional argument. This will be required'
+                    ' in mrjob 0.4.')
+                kwargs['mapper_final'] = _mapper_final
+
+        step = dict((f, None) for f in _JOB_STEP_PARAMS)
+        step['mapper'] = mapper
+        step['reducer'] = reducer
+        step.update(kwargs)
 
         if not any(step.itervalues()):
             raise Exception("Step has no mappers and no reducers")
@@ -785,7 +803,7 @@ class MRJob(object):
         def read_lines():
             for line in self._read_input():
                 try:
-                    key, value = read(line.rstrip('\n'))
+                    key, value = read(line.rstrip('\r\n'))
                     yield key, value
                 except Exception, e:
                     if self.options.strict_protocols:
@@ -894,8 +912,9 @@ class MRJob(object):
         self.add_passthrough_option(
             '--input-protocol', dest='input_protocol',
             opt_group=self.proto_opt_group,
-            default=self.DEFAULT_INPUT_PROTOCOL, choices=protocol_choices,
-            help='DEPRECATED: protocol to read input with (default: %default)')
+            default=None, choices=protocol_choices,
+            help=('DEPRECATED: protocol to read input with (default:'
+                  ' raw_value)'))
 
         self.add_passthrough_option(
             '--output-protocol', dest='output_protocol',
@@ -909,9 +928,9 @@ class MRJob(object):
         self.add_passthrough_option(
             '-p', '--protocol', dest='protocol',
             opt_group=self.proto_opt_group,
-            default=self.DEFAULT_PROTOCOL, choices=protocol_choices,
+            default=None, choices=protocol_choices,
             help=('DEPRECATED: output protocol for mappers/reducers. Choices:'
-                  ' %s (default: %%default)' % ', '.join(protocol_choices)))
+                  ' %s (default: json)' % ', '.join(protocol_choices)))
 
         self.add_passthrough_option(
             '--strict-protocols', dest='strict_protocols', default=None,
@@ -1436,17 +1455,59 @@ class MRJob(object):
 
         # DEPRECATED protocol stuff
 
-        # output_protocol defaults to protocol
-        if not self.options.output_protocol:
-            self.options.output_protocol = self.options.protocol
+        ignore_switches = (
+            self.INPUT_PROTOCOL != RawValueProtocol or
+            self.INTERNAL_PROTOCOL != JSONProtocol or
+            self.OUTPUT_PROTOCOL != JSONProtocol or
+            any(
+                (getattr(self, func_name).im_func is not
+                 getattr(MRJob, func_name).im_func)
+                for func_name in (
+                    'input_protocol',
+                    'internal_protocol',
+                    'output_protocol',
+                )
+            )
+        )
 
-        if (self.options.input_protocol or self.options.output_protocol
-            or self.options.protocol):
-            log.warn('Setting protocols via --input-protocol, --protocol,'
-                     ' --output-protocol, DEFAULT_INPUT_PROTOCOL,'
-                     ' DEFAULT_PROTOCOL, and DEFAULT_OUTPUT_PROTOCOL is'
-                     ' deprecated as of mrjob 0.3 and will no longer be'
-                     ' supported in mrjob 0.4.')
+        warn_deprecated = False
+
+        if self.options.protocol is None:
+            self.options.protocol = self.DEFAULT_PROTOCOL
+            if self.DEFAULT_PROTOCOL != 'json':
+                warn_deprecated = True
+        else:
+            warn_deprecated = True
+
+        if self.options.input_protocol is None:
+            self.options.input_protocol = self.DEFAULT_INPUT_PROTOCOL
+            if self.DEFAULT_INPUT_PROTOCOL != 'raw_value':
+                warn_deprecated = True
+        else:
+            warn_deprecated = True
+
+        # output_protocol defaults to protocol
+        if self.options.output_protocol is None:
+            self.options.output_protocol = self.options.protocol
+        else:
+            warn_deprecated = True
+
+        if warn_deprecated:
+            if ignore_switches:
+                log.warn('You have specified custom behavior in both'
+                         ' deprecated and non-deprecated ways.'
+                         ' The custom non-deprecated behavior will override'
+                         ' the deprecated behavior in all cases, including'
+                         ' command line switches.')
+                self.options.input_protocol = None
+                self.options.protocol = None
+                self.options.output_protocol = None
+            else:
+                log.warn('Setting protocols via --input-protocol, --protocol,'
+                         ' --output-protocol, DEFAULT_INPUT_PROTOCOL,'
+                         ' DEFAULT_PROTOCOL, and DEFAULT_OUTPUT_PROTOCOL is'
+                         ' deprecated as of mrjob 0.3 and will no longer be'
+                         ' supported in mrjob 0.4.')
 
     def is_mapper_or_reducer(self):
         """True if this is a mapper/reducer.
@@ -1603,7 +1664,8 @@ class MRJob(object):
         objects. Default behavior is to return an instance of
         :py:attr:`INPUT_PROTOCOL`.
         """
-        if self.options.input_protocol is not None:
+        if (self.options.input_protocol is not None and
+            self.INPUT_PROTOCOL == RawValueProtocol):
             # deprecated
             protocol_name = self.options.input_protocol
             return self.protocols()[protocol_name]()
@@ -1616,7 +1678,8 @@ class MRJob(object):
         Default behavior is to return an instance of
         :py:attr:`INTERNAL_PROTOCOL`.
         """
-        if self.options.protocol is not None:
+        if (self.options.protocol is not None and
+            self.INTERNAL_PROTOCOL == JSONProtocol):
             # deprecated
             protocol_name = self.options.protocol
             return self.protocols()[protocol_name]
@@ -1629,7 +1692,8 @@ class MRJob(object):
         lines. Default behavior is to return an instance of
         :py:attr:`OUTPUT_PROTOCOL`.
         """
-        if self.options.output_protocol is not None:
+        if (self.options.output_protocol is not None and
+            self.OUTPUT_PROTOCOL == JSONProtocol):
             # deprecated
             return self.protocols()[self.options.output_protocol]
         else:
@@ -1700,17 +1764,21 @@ class MRJob(object):
     #:
     #: Default protocol for reading input to the first mapper in your job
     #: specified by a string.
-    #: Default: None.
+    #:
+    #: Default: ``raw_value`` to match :py:attr:`.INPUT_PROTOCOL`, but
+    #: overridden by any changes to :py:attr:`.INPUT_PROTOCOL`.
     #:
     #: See :py:data:`mrjob.protocol.PROTOCOL_DICT` for the full list of
     #: protocol strings. Can be overridden by :option:`--input-protocol`.
-    DEFAULT_INPUT_PROTOCOL = None
+    DEFAULT_INPUT_PROTOCOL = 'raw_value'
 
     #: DEPRECATED
     #:
     #: Default protocol for communication between steps and final output
     #: specified by a string.
-    #: Default: None.
+    #:
+    #: Default: ``json`` to match :py:attr:`.INTERNAL_PROTOCOL`, but
+    #: overridden by any changes to :py:attr:`.INTERNAL_PROTOCOL`.
     #:
     #: See :py:data:`mrjob.protocol.PROTOCOL_DICT` for the full list of
     #: protocol strings. Can be overridden by :option:`--protocol`.
