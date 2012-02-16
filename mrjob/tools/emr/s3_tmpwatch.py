@@ -24,7 +24,7 @@ s3://your-bucket/tmp/
 
 Usage::
 
-    python -m mrjob.tools.emr.s3_tmpwatch.py [options] <time-untouched> <URIs>
+    python -m mrjob.tools.emr.s3_tmpwatch [options] <time-untouched> <URIs>
 
 Options::
 
@@ -45,13 +45,14 @@ from optparse import OptionParser
 
 try:
     import boto.utils
+    boto  # quiet "redefinition of unused ..." warning from pyflakes
 except ImportError:
     boto = None
 
 from mrjob.emr import EMRJobRunner
 from mrjob.emr import iso8601_to_datetime
+from mrjob.job import MRJob
 from mrjob.parse import parse_s3_uri
-from mrjob.util import log_to_stream
 
 
 log = logging.getLogger('mrjob.tools.emr.s3_tmpwatch')
@@ -65,11 +66,7 @@ def main():
     if not args or len(args) < 2:
         option_parser.error('Please specify time and one or more URIs')
 
-    # set up logging
-    if not options.quiet:
-        log_to_stream(name='mrjob', debug=options.verbose)
-    # suppress No handlers could be found for logger "boto" message
-    log_to_stream(name='boto', level=logging.CRITICAL)
+    MRJob.set_up_logging(quiet=options.quiet, verbose=options.verbose)
 
     time_old = process_time(args[0])
 

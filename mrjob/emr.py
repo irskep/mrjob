@@ -13,10 +13,11 @@
 # limitations under the License.
 from __future__ import with_statement
 
-import datetime
+from collections import defaultdict
+from datetime import datetime
+from datetime import timedelta
 import fnmatch
 import logging
-import math
 import os
 import posixpath
 import random
@@ -31,11 +32,13 @@ import urllib2
 
 try:
     from cStringIO import StringIO
+    StringIO  # quiet "redefinition of unused ..." warning from pyflakes
 except ImportError:
     from StringIO import StringIO
 
 try:
     import simplejson as json  # preferred because of C speedups
+    json  # quiet "redefinition of unused ..." warning from pyflakes
 except ImportError:
     import json  # built in to Python 2.6 and later
 
@@ -45,7 +48,8 @@ try:
     import boto.emr
     import boto.exception
     import boto.utils
-    from mrjob import boto_2_1_rc2
+    from mrjob import boto_2_1_1_83aae37b
+    boto  # quiet "redefinition of unused ..." warning from pyflakes
 except ImportError:
     # don't require boto; MRJobs don't actually need it when running
     # inside hadoop streaming
@@ -66,6 +70,8 @@ from mrjob.logparsers import scan_for_counters_in_files
 from mrjob.logparsers import scan_logs_in_order
 from mrjob.parse import is_s3_uri
 from mrjob.parse import parse_s3_uri
+from mrjob.pool import est_time_to_hour
+from mrjob.pool import pool_hash_and_name
 from mrjob.retry import RetryWrapper
 from mrjob.runner import MRJobRunner
 from mrjob.runner import GLOB_RE
@@ -166,28 +172,22 @@ EC2_INSTANCE_TYPE_TO_MEMORY = {
     'cg1.4xlarge': 22,
 }
 
+# Use this to figure out which hadoop version we're using if it's not
+# explicitly specified, so we can keep from passing deprecated command-line
+# options to Hadoop. If we encounter an AMI version we don't recognize,
+# we use whatever version matches 'latest'.
+#
+# The reason we don't just create a job flow and then query its Hadoop version
+# is that for most jobs, we create the steps and the job flow at the same time.
+AMI_VERSION_TO_HADOOP_VERSION = {
+    None: '0.18',  # ami_version not specified means version 1.0
+    '1.0': '0.18',
+    '2.0': '0.20.205',
+    'latest': '0.20.205',
+}
 
-def est_time_to_hour(job_flow):
-    """If available, get the difference between hours billed and hours used.
-    This metric is used to determine which job flow to use if more than one
-    is available.
-    """
-
-    if not hasattr(job_flow, 'startdatetime'):
-        return 0.0
-    else:
-        now = time.time()
-
-        # find out how long the job flow has been running
-        jf_start = iso8601_to_timestamp(job_flow.startdatetime)
-        if hasattr(job_flow, 'enddatetime'):
-            jf_end = iso8601_to_timestamp(job_flow.enddatetime)
-        else:
-            jf_end = now
-
-        minutes = (jf_end - jf_start) / 60.0
-        hours = minutes / 60.0
-        return math.ceil(hours) * 60 - minutes
+# EMR's hard limit on number of steps in a job flow
+MAX_STEPS_PER_JOB_FLOW = 256
 
 
 def s3_key_to_uri(s3_key):
@@ -202,7 +202,7 @@ def iso8601_to_timestamp(iso8601_time):
 
 def iso8601_to_datetime(iso8601_time):
     iso8601_time = SUBSECOND_RE.sub('', iso8601_time)
-    return datetime.datetime.strptime(iso8601_time, boto.utils.ISO8601)
+    return datetime.strptime(iso8601_time, boto.utils.ISO8601)
 
 
 def describe_all_job_flows(emr_conn, states=None, jobflow_ids=None,
@@ -216,17 +216,21 @@ def describe_all_job_flows(emr_conn, states=None, jobflow_ids=None,
 
     :type states: list
     :param states: A list of strings with job flow states wanted
-
     :type jobflow_ids: list
     :param jobflow_ids: A list of job flow IDs
     :type created_after: datetime
     :param created_after: Bound on job flow creation time
-
     :type created_before: datetime
     :param created_before: Bound on job flow creation time
     """
     all_job_flows = []
     ids_seen = set()
+
+    # weird things can happen if we send no args the DescribeJobFlows API
+    # (see Issue #346), so if nothing else is set, set created_before
+    # to a day in the future.
+    if not (states or jobflow_ids or created_after or created_before):
+        created_before = datetime.utcnow() + timedelta(days=1)
 
     while True:
         if created_before and created_after and created_before < created_after:
@@ -260,14 +264,14 @@ def describe_all_job_flows(emr_conn, states=None, jobflow_ids=None,
             # in the same second
             min_create_time = min(iso8601_to_datetime(jf.creationdatetime)
                                   for jf in job_flows)
-            created_before = min_create_time + datetime.timedelta(seconds=1)
+            created_before = min_create_time + timedelta(seconds=1)
             # if someone managed to start 501 job flows in the same second,
             # they are still screwed (the EMR API only returns up to 500),
             # but this seems unlikely. :)
         else:
             if not created_before:
-                created_before = datetime.datetime.utcnow()
-            created_before -= datetime.timedelta(weeks=2)
+                created_before = datetime.utcnow()
+            created_before -= timedelta(weeks=2)
 
     return all_job_flows
 
@@ -356,6 +360,13 @@ class EMRJobRunner(MRJobRunner):
                                     features. Pass a JSON string on the command
                                     line or use data structures in the config
                                     file (which is itself basically JSON).
+        :type ami_version: str
+        :param ami_version: EMR AMI version to use. This controls which Hadoop
+                            version(s) are available and which version of
+                            Python is installed, among other things; see \
+http://docs.amazonwebservices.com/ElasticMapReduce/latest/DeveloperGuideindex.html?EnvironmentConfig_AMIVersion.html
+                            for details. Implicitly defaults to AMI version
+                            1.0 (this will change to 2.0 in mrjob v0.4).
         :type aws_access_key_id: str
         :param aws_access_key_id: "username" for Amazon web services.
         :type aws_availability_zone: str
@@ -425,17 +436,51 @@ class EMRJobRunner(MRJobRunner):
         :param ec2_key_pair: name of the SSH key you set up for EMR.
         :type ec2_key_pair_file: str
         :param ec2_key_pair_file: path to file containing the SSH key for EMR
+        :type ec2_core_instance_type: str
+        :param ec2_core_instance_type: like *ec2_instance_type*, but only
+                                       for the core (also know as "slave")
+                                       Hadoop nodes; these nodes run tasks and
+                                       host HDFS. Usually you just want to use
+                                       *ec2_instance_type*. Defaults to
+                                       ``'m1.small'``.
+        :type ec2_core_instance_bid_price: str
+        :param ec2_core_instance_bid_price: when specified and not "0", this
+                                            creates the master Hadoop node as
+                                            a spot instance at this bid price.
+                                            You usually only want to set
+                                            bid price for task instances.
         :type ec2_master_instance_type: str
-        :param ec2_master_instance_type: same as *ec2_instance_type*, but only
-                                         for the master Hadoop node. Usually
-                                         you just want to use
+        :param ec2_master_instance_type: like *ec2_instance_type*, but only
+                                         for the master Hadoop node. This node
+                                         hosts the task tracker and HDFS, and
+                                         runs tasks if there are no other
+                                         nodes. Usually you just want to use
                                          *ec2_instance_type*. Defaults to
                                          ``'m1.small'``.
+        :type ec2_master_instance_bid_price: str
+        :param ec2_master_instance_bid_price: when specified and not "0", this
+                                              creates the master Hadoop node as
+                                              a spot instance at this bid
+                                              price. You usually only want to
+                                              set bid price for task instances
+                                              unless the master instance is
+                                              your only instance.
         :type ec2_slave_instance_type: str
-        :param ec2_slave_instance_type: same as *ec2_instance_type*, but only
-                                        for the slave Hadoop nodes. Usually you
-                                        just want to use *ec2_instance_type*.
-                                        Defaults to ``'m1.small'``.
+        :param ec2_slave_instance_type: An alias for *ec2_core_instance_type*,
+                                        for consistency with the EMR API.
+        :type ec2_task_instance_type: str
+        :param ec2_task_instance_type: like *ec2_instance_type*, but only
+                                       for the task Hadoop nodes; these nodes
+                                       run tasks but do not host HDFS. Usually
+                                       you just want to use
+                                       *ec2_instance_type*. Defaults to
+                                       the same instance type as
+                                       *ec2_core_instance_type*.
+        :param ec2_task_instance_bid_price: when specified and not "0", this
+                                            creates the master Hadoop node as
+                                            a spot instance at this bid price.
+                                            (You usually only want to set
+                                            bid price for task instances.)
         :type emr_endpoint: str
         :param emr_endpoint: optional host to connect to when communicating
                              with S3 (e.g.
@@ -468,10 +513,34 @@ class EMRJobRunner(MRJobRunner):
                                             file or one on S3. Rarely necessary
                                             to set this by hand.
         :type hadoop_version: str
-        :param hadoop_version: Set the version of Hadoop to use on EMR. EMR
-                               currently accepts ``'0.18'`` or ``'0.20'``;
-                               default is ``'0.20'``.
+        :param hadoop_version: Set the version of Hadoop to use on EMR.
+                               Consider setting *ami_version* instead; only AMI
+                               version 1.0 supports multiple versions of Hadoop
+                               anyway. If *ami_version* is not set, we'll
+                               default to Hadoop 0.20 for backwards
+                               compatibility with :py:mod:`mrjob` v0.3.0.
+        :type num_ec2_core_instances: int
+        :param num_ec2_core_instances: Number of core (or "slave") instances to
+                                       start up. These run your job and host
+                                       HDFS. Incompatible with
+                                       *num_ec2_instances*. This is in addition
+                                       to the single master instance.
         :type num_ec2_instances: int
+        :param num_ec2_instances: Total number of instances to start up;
+                                  basically the number of core instance you
+                                  want, plus 1 (there is always one master
+                                  instance). Default is ``1``. Incompatible
+                                  with *num_ec2_core_instances* and
+                                  *num_ec2_task_instances*.
+        :type num_ec2_task_instances: int
+        :param num_ec2_task_instances: number of task instances to start up.
+                                       These run your job but do not host
+                                       HDFS. Incompatible with
+                                       *num_ec2_instances*. If you use this,
+                                       you must set *num_ec2_core_instances*;
+                                       EMR does not allow you to run task
+                                       instances without core instances (because
+                                       there's nowhere to host HDFS).
         :type pool_emr_job_flows: bool
         :param pool_emr_job_flows: Try to run the job on a ``WAITING`` pooled
                                    job flow with the same bootstrap
@@ -484,8 +553,6 @@ class EMRJobRunner(MRJobRunner):
         :py:mod:`mrjob.tools.emr.terminate.idle_job_flows`
                                    in your crontab; job flows left idle can
                                    quickly become expensive!
-        :param num_ec2_instances: number of instances to start up. Default is
-                                  ``1``.
         :type s3_endpoint: str
         :param s3_endpoint: Host to connect to when communicating with S3 (e.g.
                             ``s3-us-west-1.amazonaws.com``). Default is to
@@ -541,7 +608,7 @@ class EMRJobRunner(MRJobRunner):
 
         self._fix_s3_scratch_and_log_uri_opts()
 
-        self._fix_ec2_instance_types()
+        self._fix_ec2_instance_opts()
 
         # pick a tmp dir based on the job name
         self._s3_tmp_uri = self._opts['s3_scratch_uri'] + self._job_name + '/'
@@ -626,6 +693,10 @@ class EMRJobRunner(MRJobRunner):
         # turn off tracker progress until tunnel is up
         self._show_tracker_progress = False
 
+        # default requested hadoop version if AMI version is not set
+        if not (self._opts['ami_version'] or self._opts['hadoop_version']):
+            self._opts['hadoop_version'] = '0.20'
+
         # init hadoop version cache
         self._inferred_hadoop_version = None
 
@@ -634,28 +705,37 @@ class EMRJobRunner(MRJobRunner):
         """A list of which keyword args we can pass to __init__()"""
         return super(EMRJobRunner, cls)._allowed_opts() + [
             'additional_emr_info',
+            'ami_version',
             'aws_access_key_id',
             'aws_availability_zone',
-            'aws_secret_access_key',
             'aws_region',
+            'aws_secret_access_key',
             'bootstrap_actions',
             'bootstrap_cmds',
             'bootstrap_files',
             'bootstrap_python_packages',
             'bootstrap_scripts',
             'check_emr_status_every',
+            'ec2_core_instance_bid_price',
+            'ec2_core_instance_type',
             'ec2_instance_type',
             'ec2_key_pair',
             'ec2_key_pair_file',
+            'ec2_master_instance_bid_price',
             'ec2_master_instance_type',
             'ec2_slave_instance_type',
-            'emr_job_flow_pool_name',
+            'ec2_task_instance_bid_price',
+            'ec2_task_instance_type',
             'emr_endpoint',
             'emr_job_flow_id',
+            'emr_job_flow_pool_name',
+            'enable_emr_debugging',
             'enable_emr_debugging',
             'hadoop_streaming_jar_on_emr',
             'hadoop_version',
+            'num_ec2_core_instances',
             'num_ec2_instances',
+            'num_ec2_task_instances',
             'pool_emr_job_flows',
             's3_endpoint',
             's3_log_uri',
@@ -672,12 +752,15 @@ class EMRJobRunner(MRJobRunner):
         """A dictionary giving the default value of options."""
         return combine_dicts(super(EMRJobRunner, cls)._default_opts(), {
             'check_emr_status_every': 30,
+            'ec2_core_instance_type': 'm1.small',
             'ec2_master_instance_type': 'm1.small',
-            'ec2_slave_instance_type': 'm1.small',
             'emr_job_flow_pool_name': 'default',
+            'hadoop_version': None,  # defaulted in __init__()
             'hadoop_streaming_jar_on_emr':
                 '/home/hadoop/contrib/streaming/hadoop-streaming.jar',
+            'num_ec2_core_instances': 0,
             'num_ec2_instances': 1,
+            'num_ec2_task_instances': 0,
             's3_sync_wait_time': 5.0,
             'ssh_bin': ['ssh'],
             'ssh_bind_ports': range(40001, 40841),
@@ -702,24 +785,99 @@ class EMRJobRunner(MRJobRunner):
             'ssh_bin': combine_cmds,
         })
 
-    def _fix_ec2_instance_types(self):
+    def _fix_ec2_instance_opts(self):
         """If the *ec2_instance_type* option is set, override instance
         type for the nodes that actually run tasks (see Issue #66). Allow
         command-line arguments to override defaults and arguments
         in mrjob.conf (see Issue #311).
 
+        Also, make sure that core and slave instance type are the same,
+        total number of instances matches number of master, core, and task
+        instances, and that bid prices of zero are converted to None.
+
         Helper for __init__.
         """
+        # Make sure slave and core instance type have the same value
+        # Within EMRJobRunner we only ever use ec2_core_instance_type,
+        # but we want ec2_slave_instance_type to be correct in the
+        # options dictionary.
+        if (self._opts['ec2_slave_instance_type'] and
+            (self._opt_priority['ec2_slave_instance_type'] >
+             self._opt_priority['ec2_core_instance_type'])):
+            self._opts['ec2_core_instance_type'] = (
+                self._opts['ec2_slave_instance_type'])
+        else:
+            self._opts['ec2_slave_instance_type'] = (
+                self._opts['ec2_core_instance_type'])
+
+        # If task instance type is not set, use core instance type
+        # (This is mostly so that we don't inadvertently join a pool
+        # with task instance types with too little memory.)
+        if not self._opts['ec2_task_instance_type']:
+            self._opts['ec2_task_instance_type'] = (
+                self._opts['ec2_core_instance_type'])
+
+        # Within EMRJobRunner, we use num_ec2_core_instances and
+        # num_ec2_task_instances, not num_ec2_instances. (Number
+        # of master instances is always 1.)
+        if (self._opt_priority['num_ec2_instances'] >
+            max(self._opt_priority['num_ec2_core_instances'],
+                self._opt_priority['num_ec2_task_instances'])):
+            # assume 1 master, n - 1 core, 0 task
+            self._opts['num_ec2_core_instances'] = (
+                self._opts['num_ec2_instances'] - 1)
+            self._opts['num_ec2_task_instances'] = 0
+        else:
+            # issue a warning if we used both kinds of instance number
+            # options on the command line or in mrjob.conf
+            if (self._opt_priority['num_ec2_instances'] >= 2 and
+                self._opt_priority['num_ec2_instances'] ==
+                max(self._opt_priority['num_ec2_core_instances'],
+                    self._opt_priority['num_ec2_task_instances'])):
+                log.warn('Mixing num_ec2_instances and'
+                         ' num_ec2_{core,task}_instances does not make sense;'
+                         ' ignoring num_ec2_instances')
+            # recalculate number of EC2 instances
+            self._opts['num_ec2_instances'] = (
+                1 +
+                self._opts['num_ec2_core_instances'] +
+                self._opts['num_ec2_task_instances'])
+
+        # Allow ec2 instance type to override other instance types
         ec2_instance_type = self._opts['ec2_instance_type']
         if ec2_instance_type:
+            # core (slave) instances
             if (self._opt_priority['ec2_instance_type'] >
-                self._opt_priority['ec2_slave_instance_type']):
+                max(self._opt_priority['ec2_core_instance_type'],
+                    self._opt_priority['ec2_slave_instance_type'])):
+                self._opts['ec2_core_instance_type'] = ec2_instance_type
                 self._opts['ec2_slave_instance_type'] = ec2_instance_type
+
             # master instance only does work when it's the only instance
-            if (self._opts['num_ec2_instances'] == 1 and
-                self._opt_priority['ec2_instance_type'] >
-                self._opt_priority['ec2_master_instance_type']):
+            if (self._opts['num_ec2_core_instances'] == 0 and
+                self._opts['num_ec2_task_instances'] == 0 and
+                (self._opt_priority['ec2_instance_type'] >
+                 self._opt_priority['ec2_master_instance_type'])):
                 self._opts['ec2_master_instance_type'] = ec2_instance_type
+
+            # task instances
+            if (self._opt_priority['ec2_instance_type'] >
+                self._opt_priority['ec2_task_instance_type']):
+                self._opts['ec2_task_instance_type'] = ec2_instance_type
+
+        # convert a bid price of '0' to None
+        for role in ('core', 'master', 'task'):
+            opt_name = 'ec2_%s_instance_bid_price' % role
+            if not self._opts[opt_name]:
+                self._opts[opt_name] = None
+            else:
+                # convert "0", "0.00" etc. to None
+                try:
+                    value = float(self._opts[opt_name])
+                    if value == 0:
+                        self._opts[opt_name] = None
+                except ValueError:
+                    pass  # maybe EMR will accept non-floats?
 
     def _fix_s3_scratch_and_log_uri_opts(self):
         """Fill in s3_scratch_uri and s3_log_uri (in self._opts) if they
@@ -1096,14 +1254,52 @@ class EMRJobRunner(MRJobRunner):
         except boto.exception.S3ResponseError:
             # mockboto throws this for some reason
             return
+        if (jobflow.keepjobflowalivewhennosteps == 'true' and
+            jobflow.state == 'WAITING'):
+            raise Exception('Operation requires job flow to terminate, but'
+                            ' it may never do so.')
         while jobflow.state not in ('TERMINATED', 'COMPLETED', 'FAILED',
                                     'SHUTTING_DOWN'):
-            raise IndexError
             msg = 'Waiting for job flow to terminate (currently %s)' % \
                                                          jobflow.state
             log.info(msg)
             time.sleep(self._opts['check_emr_status_every'])
             jobflow = self._describe_jobflow()
+
+    def _create_instance_group(self, role, instance_type, count, bid_price):
+        """Helper method for creating instance groups. For use when
+        creating a jobflow using a list of InstanceGroups, instead
+        of the typical triumverate of
+        num_instances/master_instance_type/slave_instance_type.
+
+            - Role is either 'master', 'core', or 'task'.
+            - instance_type is an EC2 instance type
+            - count is an int
+            - bid_price is a number, a string, or None. If None,
+              this instance group will be use the ON-DEMAND market
+              instead of the SPOT market.
+        """
+
+        if not instance_type:
+            if self._opts['ec2_instance_type']:
+                instance_type = self._opts['ec2_instance_type']
+            else:
+                raise ValueError('Missing instance type for %s node(s)'
+                    % role)
+
+        if bid_price:
+            market = 'SPOT'
+            bid_price = str(bid_price)  # must be a string
+        else:
+            market = 'ON_DEMAND'
+            bid_price = None
+
+        # Just name the groups "master", "task", and "core"
+        name = role.lower()
+
+        return boto_2_1_1_83aae37b.InstanceGroup(
+            count, role, instance_type, market, name, bidprice=bid_price
+            )
 
     def _create_job_flow(self, persistent=False, steps=None):
         """Create an empty job flow on EMR, and return the ID of that
@@ -1139,15 +1335,52 @@ class EMRJobRunner(MRJobRunner):
         """Build kwargs for emr_conn.run_jobflow()"""
         args = {}
 
+        args['ami_version'] = self._opts['ami_version']
         args['hadoop_version'] = self._opts['hadoop_version']
 
         if self._opts['aws_availability_zone']:
             args['availability_zone'] = self._opts['aws_availability_zone']
 
-        args['num_instances'] = str(self._opts['num_ec2_instances'])
+        # The old, simple API, available if we're not using task instances
+        # or bid prices
+        if not (self._opts['num_ec2_task_instances'] or
+                self._opts['ec2_core_instance_bid_price'] or
+                self._opts['ec2_master_instance_bid_price'] or
+                self._opts['ec2_task_instance_bid_price']):
+            args['num_instances'] = self._opts['num_ec2_core_instances'] + 1
+            args['master_instance_type'] = (
+                self._opts['ec2_master_instance_type'])
+            args['slave_instance_type'] = self._opts['ec2_core_instance_type']
+        else:
+            # Create a list of InstanceGroups
+            args['instance_groups'] = [
+                self._create_instance_group(
+                    'MASTER',
+                    self._opts['ec2_master_instance_type'],
+                    1,
+                    self._opts['ec2_master_instance_bid_price']
+                    ),
+            ]
 
-        args['master_instance_type'] = self._opts['ec2_master_instance_type']
-        args['slave_instance_type'] = self._opts['ec2_slave_instance_type']
+            if self._opts['num_ec2_core_instances']:
+                args['instance_groups'].append(
+                    self._create_instance_group(
+                        'CORE',
+                        self._opts['ec2_core_instance_type'],
+                        self._opts['num_ec2_core_instances'],
+                        self._opts['ec2_core_instance_bid_price']
+                    )
+                )
+
+            if self._opts['num_ec2_task_instances']:
+                args['instance_groups'].append(
+                    self._create_instance_group(
+                        'TASK',
+                        self._opts['ec2_task_instance_type'],
+                        self._opts['num_ec2_task_instances'],
+                        self._opts['ec2_task_instance_bid_price']
+                        )
+                    )
 
         # bootstrap actions
         bootstrap_action_args = []
@@ -1164,7 +1397,7 @@ class EMRJobRunner(MRJobRunner):
             master_bootstrap_script_args = []
             if self._opts['pool_emr_job_flows']:
                 master_bootstrap_script_args = [
-                    self._pool_arg(),
+                    'pool-' + self._pool_hash(),
                     self._opts['emr_job_flow_pool_name'],
                 ]
             bootstrap_action_args.append(
@@ -1243,7 +1476,7 @@ class EMRJobRunner(MRJobRunner):
                 reducer = None
 
             input = self._s3_step_input_uris(step_num)
-            output = self._s3_step_output_uri(step_num)
+            output = self._s3_step_output_uri(step_num)\
 
             step_args, cache_files, cache_archives = self._cache_args()
 
@@ -1272,7 +1505,7 @@ class EMRJobRunner(MRJobRunner):
         each according to the correct behavior for the current Hadoop version.
 
         For < 0.20, populate cache_files and cache_archives.
-        For >= 20, populate step_args.
+        For >= 0.20, populate step_args.
 
         step_args should be inserted into the step arguments before anything
             else.
@@ -1338,7 +1571,7 @@ class EMRJobRunner(MRJobRunner):
         # try to find a job flow from the pool. basically auto-fill
         # 'emr_job_flow_id' if possible and then follow normal behavior.
         if self._opts['pool_emr_job_flows']:
-            job_flow = self.find_job_flow()
+            job_flow = self.find_job_flow(num_steps=len(steps))
             if job_flow:
                 self._emr_job_flow_id = job_flow.jobflowid
 
@@ -1686,7 +1919,7 @@ class EMRJobRunner(MRJobRunner):
 
     def _fetch_counters_s3(self, step_nums, skip_s3_wait=False):
         job_flow = self._describe_jobflow()
-        if job_flow.keepjobflowalivewhennosteps in (True, 'true'):
+        if job_flow.keepjobflowalivewhennosteps == 'true':
             log.info("Can't fetch counters from S3 for five more minutes. Try"
                      " 'python -m mrjob.tools.emr.fetch_logs --counters %s'"
                      " in five minutes." % job_flow.jobflowid)
@@ -1774,10 +2007,14 @@ class EMRJobRunner(MRJobRunner):
         if self._opts['emr_job_flow_id']:
             return
 
-        if not any(key.startswith('bootstrap_')
-                   and key != 'bootstrap_actions'  # these are separate scripts
-                   and value
-                   for (key, value) in self._opts.iteritems()):
+        # Also don't bother if we're not pooling (and therefore don't need
+        # to have a bootstrap script to attach to) and we're not bootstrapping
+        # anything else
+        if not (self._opts['pool_emr_job_flows'] or
+            any(key.startswith('bootstrap_') and
+                key != 'bootstrap_actions' and  # these are separate scripts
+                value
+                for (key, value) in self._opts.iteritems())):
             return
 
         if self._opts['bootstrap_mrjob']:
@@ -1813,6 +2050,8 @@ class EMRJobRunner(MRJobRunner):
         that; _create_master_bootstrap_script() is responsible for that.
         """
         out = StringIO()
+
+        python_bin_in_list = ', '.join(repr(opt) for opt in self._opts['python_bin'])
 
         def writeln(line=''):
             out.write(line + '\n')
@@ -1861,7 +2100,8 @@ class EMRJobRunner(MRJobRunner):
             # un-compileable crud in the tarball.
             writeln("mrjob_dir = os.path.join(site_packages, 'mrjob')")
             writeln("call(["
-                    "'sudo', 'python', '-m', 'compileall', '-f', mrjob_dir])")
+                    "'sudo', %s, '-m', 'compileall', '-f', mrjob_dir])" %
+                    python_bin_in_list)
             writeln()
 
         # install our python modules
@@ -1875,8 +2115,8 @@ class EMRJobRunner(MRJobRunner):
                 cd_into = extract_dir_for_tar(file_dict['path'])
                 # install the module
                 writeln("check_call(["
-                        "'sudo', 'python', 'setup.py', 'install'], cwd=%r)" %
-                        cd_into)
+                        "'sudo', %s, 'setup.py', 'install'], cwd=%r)" %
+                        (python_bin_in_list, cd_into))
 
         # run our commands
         if self._opts['bootstrap_cmds']:
@@ -1926,111 +2166,180 @@ class EMRJobRunner(MRJobRunner):
     def get_emr_job_flow_id(self):
         return self._emr_job_flow_id
 
-    def usable_job_flows(self, emr_conn=None, exclude=None):
-        """Get job flows that this runner can use. Sort by instance compute
-        units and time left to an even instance hour.
+    def usable_job_flows(self, emr_conn=None, exclude=None, num_steps=1):
+        """Get job flows that this runner can use.
+
+        We basically expect to only join available job flows with the exact
+        same setup as our own, that is:
+
+        - same bootstrap setup (including mrjob version)
+        - have the same Hadoop and AMI version
+        - same number and type of instances
+
+        However, we allow joining job flows where for each role, every instance
+        has at least as much memory as we require, and the total number of
+        compute units is at least what we require.
+
+        There also must be room for our job in the job flow (job flows top out
+        at 256 steps).
+
+        We then sort by:
+        - total compute units for core + task nodes
+        - total compute units for master node
+        - time left to an even instance hour
+
+        The most desirable job flows come *last* in the list.
 
         :return: list of (job_minutes_float,
                  :py:class:`botoemr.emrobject.JobFlow`)
         """
-
         emr_conn = emr_conn or self.make_emr_conn()
         exclude = exclude or set()
 
-        all_job_flows = emr_conn.describe_jobflows()
+        req_hash = self._pool_hash()
 
-        pool_arg = self._pool_arg()
+        # decide memory and total compute units requested for each
+        # role type
+        role_to_req_instance_type = {}
+        role_to_req_num_instances = {}
+        role_to_req_mem = {}
+        role_to_req_cu = {}
+        role_to_req_bid_price = {}
 
-        def worker_instance_type(job_flow):
-            """We only care about the processing power of the task nodes, which
-            are determined by different values depending on the number of total
-            nodes.
-            """
-            if job_flow.instancecount > 1:
-                return job_flow.slaveinstancetype
+        for role in ('core', 'master', 'task'):
+            instance_type = self._opts['ec2_%s_instance_type' % role]
+            if role == 'master':
+                num_instances = 1
             else:
-                return job_flow.masterinstancetype
+                num_instances = self._opts['num_ec2_%s_instances' % role]
 
-        def cu(job_flow):
-            """Shortcut to calculate the compute units per task node of a job
-            flow
-            """
-            return EC2_INSTANCE_TYPE_TO_COMPUTE_UNITS.get(
-                worker_instance_type(job_flow), 0)
+            role_to_req_instance_type[role] = instance_type
+            role_to_req_num_instances[role] = num_instances
 
-        def mem(job_flow):
-            """Shortcut to calculate the memory per task node of a job flow """
-            return EC2_INSTANCE_TYPE_TO_MEMORY.get(
-                worker_instance_type(job_flow), 0)
+            role_to_req_bid_price[role] = (
+                self._opts['ec2_%s_instance_bid_price' % role])
 
-        # get this run's information, unfortunately duplicating some logic from
-        # the inner functions above
-        my_instance_type = self._opts['ec2_master_instance_type']
-        if self._opts['num_ec2_instances'] > 1:
-            my_instance_type = self._opts['ec2_slave_instance_type']
+            # unknown instance types can only match themselves
+            role_to_req_mem[role] = (
+                EC2_INSTANCE_TYPE_TO_MEMORY.get(instance_type, float('Inf')))
+            role_to_req_cu[role] = (
+                num_instances *
+                EC2_INSTANCE_TYPE_TO_COMPUTE_UNITS.get(instance_type,
+                                                       float('Inf')))
 
-        my_compute_units = EC2_INSTANCE_TYPE_TO_COMPUTE_UNITS.get(
-            my_instance_type, 0)
-        my_memory = EC2_INSTANCE_TYPE_TO_MEMORY.get(my_instance_type, 0)
+        sort_keys_and_job_flows = []
 
-        def matches(job_flow):
-            """Return True if the given job flow supports the configuration of
-            this run, otherwise False.
-            """
+        def add_if_match(job_flow):
             # this may be a retry due to locked job flows
             if job_flow.jobflowid in exclude:
-                return False
+                return
 
-            # there is a hard limit of 256 steps per job flow
-            if len(job_flow.steps) > 255:
-                return False
+            # only take persistent job flows
+            if job_flow.keepjobflowalivewhennosteps != 'true':
+                return
 
-            # convert from braindead string types to usable types
-            job_flow.instancecount = int(job_flow.instancecount)
-            keep_alive = job_flow.keepjobflowalivewhennosteps
-            job_flow.keepjobflowalivewhennosteps = (
-                keep_alive in ('true', True))
+            # match pool name, and (bootstrap) hash
+            hash, name = pool_hash_and_name(job_flow)
+            if req_hash != hash:
+                return
 
-            # only take idle job flows
-            if job_flow.state != 'WAITING':
-                return False
-
-            # match bootstrap configuration and pool name and hash
-            if not job_flow.bootstrapactions:
-                return False
-
-            args = [arg.value for arg in job_flow.bootstrapactions[-1].args]
-            if not args == [pool_arg, self._opts['emr_job_flow_pool_name']]:
-                return False
-
-            # sanity check for proper type of job flow
-            if not job_flow.keepjobflowalivewhennosteps:
-                return False
+            if self._opts['emr_job_flow_pool_name'] != name:
+                return
 
             # match hadoop version
-            if not job_flow.hadoopversion == self._opts['hadoop_version']:
-                return False
+            if job_flow.hadoopversion != self.get_hadoop_version():
+                return
 
-            # don't accept a job flow with worse performance characteristics
-            # than those specified by the config
-            if cu(job_flow) < my_compute_units:
-                return False
-            if mem(job_flow) < my_memory:
-                return False
-            if job_flow.instancecount < self._opts['num_ec2_instances']:
-                return False
+            # match AMI version
+            job_flow_ami_version = getattr(job_flow, 'amiversion', None)
+            if job_flow_ami_version != self._opts['ami_version']:
+                return
 
-            return True
+            # there is a hard limit of 256 steps per job flow
+            if len(job_flow.steps) + num_steps > MAX_STEPS_PER_JOB_FLOW:
+                return
 
-        available_job_flows = [jf for jf in all_job_flows if matches(jf)]
+            # total compute units per group
+            role_to_cu = defaultdict(float)
+            # total number of instances of the same type in each group.
+            # This allows us to match unknown instance types.
+            role_to_matched_instances = defaultdict(int)
 
-        def sort_key(job_flow):
-            return (cu(job_flow) * job_flow.instancecount,
-                    est_time_to_hour(job_flow))
+            # check memory and compute units, bailing out if we hit
+            # an instance with too little memory
+            for ig in job_flow.instancegroups:
+                role = ig.instancerole.lower()
 
-        return sorted(available_job_flows, key=sort_key)
+                # unknown, new kind of role; bail out!
+                if role not in ('core', 'master', 'task'):
+                    return
 
-    def find_job_flow(self):
+                req_instance_type = role_to_req_instance_type[role]
+                if ig.instancetype != req_instance_type:
+                    # if too little memory, bail out
+                    mem = EC2_INSTANCE_TYPE_TO_MEMORY.get(ig.instancetype, 0.0)
+                    req_mem = role_to_req_mem.get(role, 0.0)
+                    if mem < req_mem:
+                        return
+
+                # if bid price is too low, don't count compute units
+                req_bid_price = role_to_req_bid_price[role]
+                bid_price = getattr(ig, 'bidprice', None)
+
+                # if the instance is on-demand (no bid price) or bid prices
+                # are the same, we're okay
+                if bid_price and bid_price != req_bid_price:
+                    # whoops, we didn't want spot instances at all
+                    if not req_bid_price:
+                        continue
+
+                    try:
+                        if float(req_bid_price) > float(bid_price):
+                            continue
+                    except ValueError:
+                        # we don't know what to do with non-float bid prices,
+                        # and we know it's not equal to what we requested
+                        continue
+
+                # don't require instances to be running; we'd be worse off if
+                # we started our own job flow from scratch. (This can happen if
+                # the previous job finished while some task instances were
+                # still being provisioned.)
+                cu = (int(ig.instancerequestcount) *
+                      EC2_INSTANCE_TYPE_TO_COMPUTE_UNITS.get(
+                          ig.instancetype, 0.0))
+                role_to_cu.setdefault(role, 0.0)
+                role_to_cu[role] += cu
+
+                # track number of instances of the same type
+                if ig.instancetype == req_instance_type:
+                    role_to_matched_instances[role] += (
+                        int(ig.instancerequestcount))
+
+            # check if there are enough compute units
+            for role, req_cu in role_to_req_cu.iteritems():
+                req_num_instances = role_to_req_num_instances[role]
+                # if we have at least as many units of the right type,
+                # don't bother counting compute units
+                if req_num_instances > role_to_matched_instances[role]:
+                    cu = role_to_cu.get(role, 0.0)
+                    if cu < req_cu:
+                        return
+
+            # make a sort key
+            sort_key = (role_to_cu['core'] + role_to_cu['task'],
+                        role_to_cu['master'],
+                        est_time_to_hour(job_flow))
+
+            sort_keys_and_job_flows.append((sort_key, job_flow))
+
+        for job_flow in emr_conn.describe_jobflows(states=['WAITING']):
+            add_if_match(job_flow)
+
+        return [job_flow for (sort_key, job_flow)
+                in sorted(sort_keys_and_job_flows)]
+
+    def find_job_flow(self, num_steps=1):
         """Find a job flow that can host this runner. Prefer flows with more
         compute units. Break ties by choosing flow with longest idle time.
         Return ``None`` if no suitable flows exist.
@@ -2040,8 +2349,10 @@ class EMRJobRunner(MRJobRunner):
         emr_conn = self.make_emr_conn()
         s3_conn = self.make_s3_conn()
         while chosen_job_flow is None:
-            sorted_tagged_job_flows = self.usable_job_flows(emr_conn=emr_conn,
-                                                            exclude=exclude)
+            sorted_tagged_job_flows = self.usable_job_flows(
+                emr_conn=emr_conn,
+                exclude=exclude,
+                num_steps=num_steps)
             if sorted_tagged_job_flows:
                 job_flow = sorted_tagged_job_flows[-1]
                 lock_uri = make_lock_uri(self._opts['s3_scratch_uri'],
@@ -2057,10 +2368,10 @@ class EMRJobRunner(MRJobRunner):
             else:
                 return None
 
-    def _pool_arg(self):
+    def _pool_hash(self):
         """Generate a hash of the bootstrap configuration so it can be used to
-        match jobs and job flows. This value will be passed as an argument
-        to the bootstrap script.
+        match jobs and job flows. This first argument passed to the bootstrap
+        script will be ``'pool-'`` plus this hash.
         """
         def should_include_file(info):
             # Bootstrap scripts will always have a different checksum
@@ -2095,13 +2406,14 @@ class EMRJobRunner(MRJobRunner):
         things_to_hash = [
             [self.md5sum(fd['path'])
              for fd in self._files if should_include_file(fd)],
+            self._opts['additional_emr_info'],
             self._opts['bootstrap_mrjob'],
             self._opts['bootstrap_cmds'],
             cleaned_bootstrap_actions,
         ]
         if self._opts['bootstrap_mrjob']:
             things_to_hash.append(mrjob.__version__)
-        return 'pool-%s' % hash_object(things_to_hash)
+        return hash_object(things_to_hash)
 
     ### GENERAL FILESYSTEM STUFF ###
 
@@ -2303,9 +2615,9 @@ class EMRJobRunner(MRJobRunner):
     def make_emr_conn(self):
         """Create a connection to EMR.
 
-        :return: a :py:class:`mrjob.boto_2_1_rc2.EmrConnection`, a subclass of
-                 :py:class:`boto.emr.connection.EmrConnection`, wrapped in a
-                 :py:class:`mrjob.retry.RetryWrapper`
+        :return: a :py:class:`mrjob.boto_2_1_1_83aae37b.EmrConnection`, a
+                 subclass of :py:class:`boto.emr.connection.EmrConnection`,
+                 wrapped in a :py:class:`mrjob.retry.RetryWrapper`
         """
         # ...which is then wrapped in bacon! Mmmmm!
 
@@ -2316,7 +2628,7 @@ class EMRJobRunner(MRJobRunner):
         region = self._get_region_info_for_emr_conn()
         log.debug('creating EMR connection (to %s)' % region.endpoint)
 
-        raw_emr_conn = boto_2_1_rc2.EmrConnection(
+        raw_emr_conn = boto_2_1_1_83aae37b.EmrConnection(
             aws_access_key_id=self._opts['aws_access_key_id'],
             aws_secret_access_key=self._opts['aws_secret_access_key'],
             region=region)
@@ -2354,8 +2666,18 @@ class EMRJobRunner(MRJobRunner):
                 self._inferred_hadoop_version = (
                     self._describe_jobflow().hadoopversion)
             else:
-                # otherwise, read it from the config
-                self._inferred_hadoop_version = self._opts['hadoop_version']
+                # otherwise, read it from hadoop_version/ami_version
+                hadoop_version = self._opts['hadoop_version']
+                if hadoop_version:
+                    self._inferred_hadoop_version = hadoop_version
+                else:
+                    ami_version = self._opts['ami_version']
+                    # don't explode if we see an AMI version that's
+                    # newer than what we know about.
+                    self._inferred_hadoop_version = (
+                        AMI_VERSION_TO_HADOOP_VERSION.get(ami_version) or
+                        AMI_VERSION_TO_HADOOP_VERSION['latest'])
+
         return self._inferred_hadoop_version
 
     def _address_of_master(self, emr_conn=None):

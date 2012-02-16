@@ -14,13 +14,13 @@
 """Utilities for parsing errors, counters, and status messages."""
 from functools import wraps
 import logging
-from optparse import OptionValueError
 import re
 from urlparse import ParseResult
 from urlparse import urlparse as urlparse_buggy
 
 try:
     from cStringIO import StringIO
+    StringIO  # quiet "redefinition of unused ..." warning from pyflakes
 except ImportError:
     from StringIO import StringIO
 
@@ -29,6 +29,10 @@ HADOOP_STREAMING_JAR_RE = re.compile(r'^hadoop.*streaming.*\.jar$')
 
 # match an mrjob job name (these are used to name EMR job flows)
 JOB_NAME_RE = re.compile(r'^(.*)\.(.*)\.(\d+)\.(\d+)\.(\d+)$')
+
+# match an mrjob step name (these are used to name steps in EMR)
+STEP_NAME_RE = re.compile(
+    r'^(.*)\.(.*)\.(\d+)\.(\d+)\.(\d+): Step (\d+) of (\d+)$')
 
 log = logging.getLogger('mrjob.parse')
 
@@ -242,12 +246,12 @@ def find_input_uri_for_mapper(lines):
 
         2010-07-27 17:54:54,344 INFO org.apache.hadoop.fs.s3native.NativeS3FileSystem (main): Opening 's3://yourbucket/logs/2010/07/23/log2-00077.gz' for reading
     """
+    val = None
     for line in lines:
         match = _OPENING_FOR_READING_RE.match(line)
         if match:
-            return match.group(1)
-    else:
-        return None
+            val = match.group(1)
+    return val
 
 
 _HADOOP_STREAMING_ERROR_RE = re.compile(

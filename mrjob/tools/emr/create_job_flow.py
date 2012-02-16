@@ -1,4 +1,4 @@
-# Copyright 2009-2011 Yelp
+# Copyright 2009-2011 Yelp and Contributors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ Usage::
     python -m mrjob.tools.emr.create_job_flow
 
 **WARNING**: do not run this without having
-:py:mod:`mrjob.tools.emr.terminate.idle_job_flows` in your crontab; job flows
+:py:mod:`mrjob.tools.emr.terminate_idle_job_flows` in your crontab; job flows
 left idle can quickly become expensive!
 """
 from __future__ import with_statement
@@ -30,10 +30,20 @@ from optparse import OptionGroup
 from mrjob.emr import EMRJobRunner
 from mrjob.job import MRJob
 from mrjob.util import scrape_options_into_new_groups
-from mrjob.util import log_to_stream
 
 
 def main():
+    """Run the create_job_flow tool with arguments from ``sys.argv`` and
+    printing to ``sys.stdout``."""
+    runner = EMRJobRunner(**runner_kwargs())
+    emr_job_flow_id = runner.make_persistent_job_flow()
+    print emr_job_flow_id
+
+
+def runner_kwargs():
+    """Parse command line arguments into arguments for
+    :py:class:`EMRJobRunner`
+    """
     # parser command-line args
     option_parser = make_option_parser()
     options, args = option_parser.parse_args()
@@ -41,25 +51,20 @@ def main():
     if args:
         option_parser.error('takes no arguments')
 
-    # set up logging
-    if not options.quiet:
-        log_to_stream(name='mrjob', debug=options.verbose)
+    MRJob.set_up_logging(quiet=options.quiet, verbose=options.verbose)
 
     # create the persistent job
-    runner_kwargs = options.__dict__.copy()
-    del runner_kwargs['quiet']
-    del runner_kwargs['verbose']
-
-    runner = EMRJobRunner(**runner_kwargs)
-    emr_job_flow_id = runner.make_persistent_job_flow()
-    print emr_job_flow_id
+    kwargs = options.__dict__.copy()
+    del kwargs['quiet']
+    del kwargs['verbose']
+    return kwargs
 
 
 def make_option_parser():
     usage = '%prog [options]'
     description = (
         'Create a persistent EMR job flow to run jobs in. WARNING: do not run'
-        ' this without mrjob.tools.emr.terminate.idle_job_flows in your'
+        ' this without mrjob.tools.emr.terminate_idle_job_flows in your'
         ' crontab; job flows left idle can quickly become expensive!')
     option_parser = OptionParser(usage=usage, description=description)
 
@@ -95,15 +100,21 @@ def make_option_parser():
             'bootstrap_cmds',
             'bootstrap_files',
             'bootstrap_python_packages',
+            'ec2_core_instance_bid_price',
+            'ec2_core_instance_type',
             'ec2_instance_type',
             'ec2_key_pair',
+            'ec2_master_instance_bid_price',
             'ec2_master_instance_type',
-            'ec2_slave_instance_type',
+            'ec2_task_instance_bid_price',
+            'ec2_task_instance_type',
             'emr_endpoint',
             'emr_job_flow_pool_name',
             'enable_emr_debugging',
             'hadoop_version',
+            'num_ec2_core_instances',
             'num_ec2_instances',
+            'num_ec2_task_instances',
             'pool_emr_job_flows',
             's3_endpoint',
             's3_log_uri',

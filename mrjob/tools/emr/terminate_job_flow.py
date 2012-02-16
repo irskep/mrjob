@@ -15,7 +15,7 @@
 
 Usage::
 
-    python -m mrjob.tools.emr.terminate_job_flow.py [options] j-JOBFLOWID
+    python -m mrjob.tools.emr.terminate_job_flow [options] j-JOBFLOWID
 
 Terminate an existing EMR job flow.
 
@@ -35,7 +35,7 @@ import logging
 from optparse import OptionParser
 
 from mrjob.emr import EMRJobRunner
-from mrjob.util import log_to_stream
+from mrjob.job import MRJob
 
 log = logging.getLogger('mrjob.tools.emr.terminate_job_flow')
 
@@ -46,12 +46,10 @@ def main():
     options, args = option_parser.parse_args()
 
     if len(args) != 1:
-        option_parser.error('takes exactly one argument')
+        option_parser.error('This tool takes exactly one argument.')
     emr_job_flow_id = args[0]
 
-    # set up logging
-    if not options.quiet:
-        log_to_stream(name='mrjob', debug=options.verbose)
+    MRJob.set_up_logging(quiet=options.quiet, verbose=options.verbose)
 
     # create the persistent job
     runner = EMRJobRunner(conf_path=options.conf_path)

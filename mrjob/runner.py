@@ -34,6 +34,7 @@ import tempfile
 
 try:
     from cStringIO import StringIO
+    StringIO  # quiet "redefinition of unused ..." warning from pyflakes
 except ImportError:
     from StringIO import StringIO
 
@@ -71,7 +72,9 @@ GLOB_RE = re.compile(r'^(.*?)([\[\*\?].*)$')
 CLEANUP_CHOICES = ['ALL', 'LOCAL_SCRATCH', 'LOGS', 'NONE', 'REMOTE_SCRATCH',
                    'SCRATCH', 'IF_SUCCESSFUL']
 
-#: DEPRECATED: the default cleanup-on-success option: ``'IF_SUCCESSFUL'``
+#: .. deprecated:: 0.3.0
+#:
+#: the default cleanup-on-success option: ``'IF_SUCCESSFUL'``
 CLEANUP_DEFAULT = 'IF_SUCCESSFUL'
 
 _STEP_RE = re.compile(r'^M?C?R?$')
@@ -602,10 +605,10 @@ class MRJobRunner(object):
             self._cleanup_logs()
 
     def counters(self):
-        """Get counters associated with this run in this form:
+        """Get counters associated with this run in this form::
 
             [{'group name': {'counter1': 1, 'counter2': 2}},
-             {'group name': ...]
+             {'group name': ...}]
 
         The list contains an entry for every step of the current job, ignoring
         earlier steps in the same job flow.

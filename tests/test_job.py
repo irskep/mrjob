@@ -28,6 +28,7 @@ import time
 
 try:
     import unittest2 as unittest
+    unittest  # quiet "redefinition of unused ..." warning from pyflakes
 except ImportError:
     import unittest
 
@@ -263,6 +264,11 @@ class MRTestCase(unittest.TestCase):
 
 
 class MRInitTestCase(unittest.TestCase):
+
+    def test_mapper(self):
+        j = MRInitJob()
+        j.mapper_init()
+        self.assertEqual(j.mapper(None, None).next(), (None, j.sum_amount))
 
     def test_init_funcs(self):
         num_inputs = 2
