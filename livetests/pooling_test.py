@@ -188,3 +188,7 @@ class PoolingLiveTestCase(LiveTestCase):
         else:
             assert_equal(jf_id_1, jf_id_canonical_2)
             assert_equal(jf_id_2, jf_id_canonical_1)
+
+
+class SpotInstancePoolingTestCase(object):
+    pass
