@@ -22,12 +22,10 @@ from testify import teardown
 from livetests.livetest import LiveTestCase
 from mrjob.emr import EMRJobRunner
 
+
 class PoolingLiveTestCase(LiveTestCase):
     # this is required
     TEST_PATH = __file__
-
-    # we only want the mrjob.conf, we don't want to use testconf.yaml
-    GENERATE_FROM_CONFIG = False
 
     @setup
     def init_job_flow_list(self):
@@ -49,13 +47,11 @@ class PoolingLiveTestCase(LiveTestCase):
             return livetest_conf_path
 
     def _make_runner(self, **kwargs):
-        runner = EMRJobRunner(conf_path=self._config_path(),
-                              **kwargs)
+        runner = EMRJobRunner(**kwargs)
         return runner
 
     def _make_pooled_job_flow(self, pool_name=None, **kwargs):
-        runner = EMRJobRunner(conf_path=self._config_path(),
-                              pool_emr_job_flows=True,
+        runner = EMRJobRunner(pool_emr_job_flows=True,
                               emr_job_flow_pool_name=pool_name,
                               **kwargs)
         jf_id = runner.make_persistent_job_flow()

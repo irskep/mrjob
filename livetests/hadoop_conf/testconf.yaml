@@ -1,4 +1,0 @@
-runners: ['hadoop']
-python_bins: [['python2.6']]
-jobs:
-    - job: livetests.hadoop_conf.mr_hadoop_conf

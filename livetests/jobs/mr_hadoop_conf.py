@@ -11,10 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""The classic MapReduce job: count the frequency of words.
 
-But have the combiner double the count so we can make sure it's run.
-"""
+import os
 
 try:
     import json
@@ -49,6 +47,7 @@ class MRHadoopConfTest(MRJob):
 
     def reducer_final(self):
         yield None, self.keys_seen
+        self.increment_counter('env', str(dict(os.environ)))
 
 
 if __name__ == '__main__':

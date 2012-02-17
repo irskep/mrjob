@@ -1,4 +1,0 @@
-runners: ['local', 'inline', 'hadoop', 'emr-0.18', 'emr-0.20']
-#python_bins: [['python2.5'], ['python2.6'], ['python2.7']]
-jobs:
-    - job: livetests.combiners.mr_double_word_freq_count
