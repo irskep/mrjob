@@ -1738,6 +1738,7 @@ http://docs.amazonwebservices.com/ElasticMapReduce/latest/DeveloperGuideindex.ht
                 self._mr_job_extra_args())
 
     def _reducer_args(self, step_num):
+        return ['cat']
         return (self._script_args() +
                 ['--step-num=%d' % step_num, '--reducer'] +
                 self._mr_job_extra_args())

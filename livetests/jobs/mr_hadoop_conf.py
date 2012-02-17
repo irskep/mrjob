@@ -21,10 +21,12 @@ except ImportError:
 
 from mrjob.compat import get_jobconf_value
 from mrjob.job import MRJob
+from mrjob.protocol import RawProtocol
 
 
 class MRHadoopConfTest(MRJob):
 
+    INTERNAL_PROTOCOL = RawProtocol
     PARTITIONER = 'org.apache.hadoop.mapred.lib.KeyFieldBasedPartitioner'
 
     JOBCONF = {
@@ -32,7 +34,7 @@ class MRHadoopConfTest(MRJob):
         'stream.num.map.output.key.fields': '4',
         'map.output.key.field.separator': '.',
         'num.key.fields.for.partition': '2',
-        'mapred.reduce.tasks': '1',
+        'mapred.reduce.tasks': '12',
     }
 
     def mapper(self, key, value):
