@@ -65,7 +65,7 @@ class LiveTestCase(TestCase):
         with mr_job.make_runner() as runner:
             runner.run()
             results = sorted(s.rstrip('\r\n') for s in runner.stream_output())
-            assert_equal(results, output_lines)
+            assert_equal(results, sorted(output_lines))
 
     def simple_run(self, runner_name, version=None):
         args = ['--runner', runner_name]

@@ -19,6 +19,7 @@ try:
 except ImportError:
     import simplejson as json
 
+from mrjob.compat import get_jobconf_value
 from mrjob.job import MRJob
 
 
@@ -31,7 +32,7 @@ class MRHadoopConfTest(MRJob):
         'stream.num.map.output.key.fields': '4',
         'map.output.key.field.separator': '.',
         'num.key.fields.for.partition': '2',
-        'mapred.reduce.tasks': '3',
+        'mapred.reduce.tasks': '1',
     }
 
     def mapper(self, key, value):
@@ -40,14 +41,19 @@ class MRHadoopConfTest(MRJob):
     def reducer_init(self):
         self.keys_seen = []
 
-    def reducer(self, key, value):
+    def reducer(self, key, values):
         self.increment_counter('k', key)
-        self.increment_counter('v', value)
+        for value in values:
+            self.increment_counter('v', value)
         self.keys_seen.append(key)
 
     def reducer_final(self):
-        yield None, self.keys_seen
-        self.increment_counter('env', str(dict(os.environ)))
+        yield 'keys_seen', self.keys_seen
+        for key in self.JOBCONF:
+            try:
+                yield key, (get_jobconf_value(key) == self.JOBCONF[key])
+            except KeyError:
+                yield key, False
 
 
 if __name__ == '__main__':
