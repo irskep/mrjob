@@ -241,12 +241,3 @@ class PoolingLiveTestCase(LiveTestCase):
             '--ec2-core-instance-bid-price', '0.10',
             '--ec2-master-instance-bid-price', '77.77',
             '--ec2-task-instance-bid-price', '22.00'])
-
-    def test_can_turn_off_pooling_from_cmd_line(self):
-        # turn on pooling in mrjob.conf
-        with open(self.mrjob_conf_path, 'w') as f:
-            dump_mrjob_conf({'runners': {'emr': {
-                'check_emr_status_every': 0.01,
-                's3_sync_wait_time': 0.01,
-                'pool_emr_job_flows': True,
-            }}}, f)
