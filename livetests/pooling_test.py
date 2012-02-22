@@ -16,6 +16,7 @@ import sys
 import time
 
 from testify import assert_equal
+from testify import assert_not_equal
 from testify import setup
 from testify import teardown
 
@@ -155,7 +156,7 @@ class PoolingLiveTestCase(LiveTestCase):
         jf_id_1 = runner1.find_job_flow()
         jf_id_2 = runner2.find_job_flow()
 
-        assert_equal(jf_id_1, jf_id_canonical)
+        assert_equal(jf_id_1.jobflowid, jf_id_canonical)
         assert_equal(jf_id_2, None)
 
     def test_simultaneous_two_exist(self):
@@ -163,11 +164,6 @@ class PoolingLiveTestCase(LiveTestCase):
                                     emr_job_flow_pool_name='test_pool_name')
         runner2 = self._make_runner(pool_emr_job_flows=True,
                                     emr_job_flow_pool_name='test_pool_name')
-
-        _, jf_id_canonical_1 = self.make_pooled_job_flow(
-            pool_name='test_pool_name')
-        _, jf_id_canonical_2 = self.make_pooled_job_flow(
-            pool_name='test_pool_name')
 
         pool_runner_1, jf_id_canonical_1 = self.make_pooled_job_flow(
             pool_name='test_pool_name')
